@@ -23,6 +23,19 @@ If XMCP is not running or the articles tools are missing, run the setup procedur
 5. Start `python server.py`. First start opens a browser for OAuth consent — tell the user to complete it.
 6. Verify the MCP endpoint responds. Do not make any X API call before credentials are in place.
 
+## Pre-flight: sensitive-information check
+
+Run this **before any upload or X API call**. Nothing with live credentials, financial figures, or personal data may reach X's servers.
+
+1. **Text scan (deterministic).** Run:
+   ```sh
+   node <pkg>/scripts/scan-sensitive.mjs <file.md>
+   ```
+   It exits 1 and prints JSON findings (token shapes, high-entropy strings, emails, phone numbers) plus `images_for_visual_review`. Show every finding to the user.
+2. **Visual review (agent).** Open every image in `images_for_visual_review` and list anything sensitive: credentials and tokens, balances or spend figures, account IDs, email addresses, real names, internal URLs, file trees revealing private paths. Present the list — the user rules each item (keep / redact / retake).
+3. **Redact confirmed items before upload.** Prefer masking at the source (e.g. retake a web screenshot after masking values in the DOM); otherwise cover with a solid block or mosaic in the image file. Never upload an image that still shows live credentials.
+4. **CHECKPOINT.** Proceed to the publish workflow only after the user has ruled every finding.
+
 ## Publish workflow
 
 Resolve `<pkg>` as the directory containing this skill's package (the `scripts/` directory sits beside `skills/`). If you reached this SKILL.md through a symlinked skill directory (the common OpenCode install), resolve the symlink first — `<pkg>` is the real repository root, not the directory the symlink lives in.

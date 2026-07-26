@@ -151,4 +151,47 @@ if (!reachable) {
   console.log('playground contract test: OK');
 }
 
+// --- 5. scan-sensitive -------------------------------------------------------
+
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
+
+const scanScript = join(here, '..', 'scripts', 'scan-sensitive.mjs');
+const runScan = (f) => {
+  try {
+    const out = execFileSync('node', [scanScript, f], { encoding: 'utf8' });
+    return { code: 0, ...JSON.parse(out) };
+  } catch (e) {
+    return { code: e.status, ...JSON.parse(e.stdout) };
+  }
+};
+
+// Clean fixture: no findings, but images listed for visual review.
+const clean = runScan(join(here, 'fixture.md'));
+assert.equal(clean.code, 0);
+assert.deepEqual(clean.findings, []);
+assert.deepEqual(clean.images_for_visual_review, ['./img/diagram.png']);
+
+// Dirty fixture: token shapes, email, high-entropy string must be caught.
+const dir = mkdtempSync(joinPath(tmpdir(), 'xa-scan-'));
+const dirtyPath = joinPath(dir, 'dirty.md');
+writeFileSync(dirtyPath, [
+  '# t',
+  'token: ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+  'mail me at bob@example.com',
+  'key = "mK9xQ2vL8nP4rT6yU1wE3sD5fG7hJ9kL0zX2cV4bN6mQ8"',
+  'callback: http://127.0.0.1:8976/oauth/callback',
+  'post id 2081215845620236345',
+].join('\n'));
+const dirty = runScan(dirtyPath);
+assert.equal(dirty.code, 1);
+const kinds = dirty.findings.map((f) => f.kind);
+assert.ok(kinds.includes('github-token'), 'github-token missed');
+assert.ok(kinds.includes('email'), 'email missed');
+assert.ok(kinds.includes('high-entropy-string') || kinds.includes('secret-assignment'), 'secret string missed');
+assert.ok(!dirty.findings.some((f) => f.preview.includes('127.0.0.1')), 'loopback must be allow-listed');
+assert.ok(!dirty.findings.some((f) => f.preview.includes('2081215845620236345')), 'snowflake IDs must be allow-listed');
+console.log('scan-sensitive tests: OK');
+
 console.log('\nAll tests passed.');

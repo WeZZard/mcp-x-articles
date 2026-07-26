@@ -1,6 +1,6 @@
 {
   "name": "pi-x-articles",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Publish Markdown files as X Articles via XMCP and the official X API v2 Articles endpoints: deterministic Markdown → content_state conversion, image upload, draft-then-publish with a human checkpoint.",
   "keywords": [
     "pi-package"
