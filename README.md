@@ -16,13 +16,27 @@ The conversion is a Node script (`scripts/markdown-to-content-state.mjs`, one de
 
 ## Install
 
+One repo serves four agents: the shared `skills/x-articles/SKILL.md` plus a thin manifest per platform. Claude Code and Codex also pick up the bundled `.mcp.json`, which pre-configures the XMCP endpoint.
+
 **pi:**
 
 ```sh
 pi install git:github.com/WeZZard/pi-x-articles
 ```
 
-**Claude Code / Codex / OpenCode:** clone this repo and make the skill visible to your agent — e.g. symlink or copy `skills/x-articles` into the agent's skills directory (`~/.claude/skills/`, `~/.codex/skills/`, or the equivalent), then run `npm install` in the repo root so the converter's dependency is available.
+**Claude Code:** install the repo as a plugin (it carries `.claude-plugin/plugin.json`), e.g. add this repo as a marketplace and `/plugin install x-articles`, or clone it and point Claude Code at the directory.
+
+**Codex:** install the repo as a plugin (it carries `.codex-plugin/plugin.json`).
+
+**OpenCode:** clone this repo and symlink the skill into your skills directory, then install the converter's dependency:
+
+```sh
+git clone https://github.com/WeZZard/pi-x-articles
+cd pi-x-articles && npm install
+ln -s "$PWD/skills/x-articles" ~/.config/opencode/skills/x-articles
+```
+
+Whichever agent you use, keep `skills/` and `scripts/` side by side — the skill resolves the converter relative to the package root. Symlink, don't copy.
 
 ## Use
 

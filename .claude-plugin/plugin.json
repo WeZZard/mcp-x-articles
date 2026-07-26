@@ -1,0 +1,12 @@
+{
+  "name": "x-articles",
+  "version": "0.1.0",
+  "description": "Publish Markdown files as X Articles via XMCP and the official X API v2 Articles endpoints.",
+  "author": {
+    "name": "WeZZard",
+    "url": "https://github.com/WeZZard"
+  },
+  "repository": "https://github.com/WeZZard/pi-x-articles",
+  "license": "MIT",
+  "keywords": ["x", "twitter", "articles", "markdown", "publish"]
+}
