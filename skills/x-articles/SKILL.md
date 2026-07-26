@@ -25,7 +25,7 @@ If XMCP is not running or the articles tools are missing, run the setup procedur
 
 ## Publish workflow
 
-Resolve `<pkg>` as the directory containing this skill's package (the `scripts/` directory sits beside `skills/`).
+Resolve `<pkg>` as the directory containing this skill's package (the `scripts/` directory sits beside `skills/`). If you reached this SKILL.md through a symlinked skill directory (the common OpenCode install), resolve the symlink first — `<pkg>` is the real repository root, not the directory the symlink lives in.
 
 1. **Convert.** Run:
    ```sh
