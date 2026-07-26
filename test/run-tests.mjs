@@ -101,4 +101,54 @@ for (const e of cs.entities) {
 }
 console.log('live OpenAPI schema validation: OK');
 
+// --- 4. Playground contract test (skipped if the playground is not running) --
+// The X API Playground (github.com/xdevplatform/playground) is first-party and
+// validates requests against the same OpenAPI spec before its stub handler runs.
+// Start it with: playground start --port 8791
+
+const PLAYGROUND = process.env.PLAYGROUND_URL ?? 'http://127.0.0.1:8791';
+const OAUTH1 =
+  'OAuth oauth_consumer_key="t",oauth_token="t",oauth_signature_method="HMAC-SHA1",oauth_timestamp="1",oauth_nonce="n",oauth_version="1.0",oauth_signature="s"';
+
+async function postDraft(body) {
+  const res = await fetch(`${PLAYGROUND}/2/articles/draft`, {
+    method: 'POST',
+    headers: { Authorization: OAUTH1, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+const reachable = await fetch(`${PLAYGROUND}/health`).then((r) => r.ok).catch(() => false);
+if (!reachable) {
+  console.log(`playground contract test: SKIPPED (no playground at ${PLAYGROUND})`);
+} else {
+  const req = { title: out.title, content_state: out.content_state };
+
+  // Our converter's output (all block/entity types) must be accepted.
+  const ok = await postDraft(req);
+  assert.equal(ok.status, 200, `playground rejected converter output: ${JSON.stringify(ok.body)}`);
+
+  // Negative controls: the validator must reject these — proving the 200 above
+  // came from real validation, not a blanket accept.
+  const missing = await postDraft({ title: 'x' });
+  assert.equal(missing.status, 400);
+  const badType = await postDraft({
+    title: 'x',
+    content_state: { blocks: [{ text: 'x', type: 'not-a-real-type' }], entities: [] },
+  });
+  assert.equal(badType.status, 400);
+
+  // Publish path shape.
+  const pub = await fetch(`${PLAYGROUND}/2/articles/1234567890/publish`, {
+    method: 'POST',
+    headers: { Authorization: OAUTH1 },
+  });
+  const pubBody = await pub.json();
+  assert.equal(pub.status, 200);
+  assert.ok(pubBody.data?.post_id, 'publish response should carry data.post_id');
+
+  console.log('playground contract test: OK');
+}
+
 console.log('\nAll tests passed.');
