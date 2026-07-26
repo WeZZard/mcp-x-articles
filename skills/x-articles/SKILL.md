@@ -49,3 +49,7 @@ Resolve `<pkg>` as the directory containing this skill's package (the `scripts/`
 - Nested lists are flattened; raw HTML blocks are dropped. Both appear in `warnings` — surface them per step 2.
 
 If the X API rejects the content_state, do not hand-patch the JSON: fix the Markdown or the script, re-run, and retry. The schema of record is the live spec at `https://api.twitter.com/2/openapi.json` (`ArticleCreateDraft*` schemas).
+
+## API limits to respect
+
+The Articles API has only two endpoints — create draft and publish. There is **no update and no delete**. When the Markdown changes, create a new draft and tell the user to discard the stale one in the X composer; never promise an "update". For small text fixes after a draft exists, suggest editing in the X composer instead of regenerating. Deleting a published Article is manual (X UI) — say so when the user asks.
