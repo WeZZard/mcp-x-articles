@@ -48,10 +48,14 @@ assert.ok(table, 'table should become a markdown entity');
 // Divider.
 assert.ok(cs.entities.some((e) => e.value.type === 'divider'));
 
-// Image -> media_id resolved from the media map.
-const image = cs.entities.find((e) => e.value.type === 'image');
-assert.equal(image.value.data.media_items[0].media_id, '9999999999');
-assert.equal(image.value.data.caption, '示意图');
+// Image 1 -> media_id resolved from media map; caption comes from Markdown "title", never [alt].
+const imageEntities = cs.entities.filter((e) => e.value.type === 'image');
+assert.equal(imageEntities.length, 2);
+assert.equal(imageEntities[0].value.data.media_items[0].media_id, '9999999999');
+assert.equal(imageEntities[0].value.data.caption, '示意图');
+// Image 2 -> [alt] only with no Markdown "title" must omit visible caption completely.
+assert.equal(imageEntities[1].value.data.media_items[0].media_id, '8888888888');
+assert.equal(imageEntities[1].value.data.caption, undefined);
 assert.deepEqual(pending_images, []);
 
 // Standalone status URL -> post entity.
@@ -63,7 +67,7 @@ console.log('fixture assertions: OK');
 // --- 2. Pending-image flow -------------------------------------------------
 
 const out2 = run([join(here, 'fixture.md')]);
-assert.deepEqual(out2.pending_images, ['./img/diagram.png']);
+assert.deepEqual(out2.pending_images, ['./img/diagram.png', './img/no-caption.png']);
 const img2 = out2.content_state.entities.find((e) => e.value.type === 'image');
 assert.equal(img2.value.data.media_items[0].media_id, '');
 console.log('pending-image flow: OK');
@@ -171,7 +175,7 @@ const runScan = (f) => {
 const clean = runScan(join(here, 'fixture.md'));
 assert.equal(clean.code, 0);
 assert.deepEqual(clean.findings, []);
-assert.deepEqual(clean.images_for_visual_review, ['./img/diagram.png']);
+assert.deepEqual(clean.images_for_visual_review, ['./img/diagram.png', './img/no-caption.png']);
 
 // Dirty fixture: token shapes, email, high-entropy string must be caught.
 const dir = mkdtempSync(joinPath(tmpdir(), 'xa-scan-'));

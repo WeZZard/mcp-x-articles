@@ -66,7 +66,7 @@ Resolve `<pkg>` as the directory containing this skill's package (the `scripts/`
 - Bold/italic/strikethrough → `inline_style_ranges`; inline code degrades to plain text (X has no inline-code style). Offsets are UTF-16 code units.
 - Links → `link` entities; a standalone `x.com`/`twitter.com` status URL on its own line → embedded `post`.
 - Fenced code and GFM tables → `markdown` entities (X renders them natively — do not degrade them further).
-- `---` → `divider`; images → `image` entities referencing uploaded `media_id`s.
+- `---` → `divider`; images → `image` entities referencing uploaded `media_id`s (only the optional Markdown image `"title"` in `![alt](src "caption")` maps to `data.caption`; screen-reader `[alt]` alternative text is omitted).
 - Nested lists are flattened; raw HTML blocks are dropped. Both appear in `warnings` — surface them per step 2.
 
 If the X API rejects the content_state, do not hand-patch the JSON: fix the Markdown or the script, re-run, and retry. The schema of record is the live spec at `https://api.twitter.com/2/openapi.json` (`ArticleCreateDraft*` schemas).

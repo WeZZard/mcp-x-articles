@@ -108,8 +108,8 @@ function walkInline(tokens, state, activeStyles = []) {
         break;
       }
       case 'image': {
-        // Inline image amid text: flush as its own atomic block marker.
-        state.images.push({ src: tok.href, caption: tok.text || '' });
+        // CommonMark: tok.text is screen-reader alt text; tok.title is the optional visible figure caption.
+        state.images.push({ src: tok.href, caption: (tok.title || '').trim() });
         break;
       }
       case 'br': {

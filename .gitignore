@@ -1,1 +1,4 @@
 node_modules/
+.plans/
+.venv/
+__pycache__/
