@@ -10,13 +10,23 @@ The conversion is a Node script (`scripts/markdown-to-content-state.mjs`, one de
 
 ## Prerequisites
 
-1. **[XMCP](https://github.com/xdevplatform/xmcp)** running locally (default `http://127.0.0.1:8000/mcp`) with the articles and media-upload tools enabled. The skill walks you through setup on first run if it is missing.
+1. **[XMCP](https://github.com/xdevplatform/xmcp)** — either auto-launched over stdio on Antigravity (`mcp_config.json`) or running locally over HTTP (`http://127.0.0.1:8000/mcp`) with the articles and media-upload tools enabled. The skill walks you through setup on first run if it is missing.
 2. An [X Developer](https://console.x.com) app with credentials and credits — the X API is pay-per-use.
 3. Node.js ≥ 18 (for the converter).
 
 ## Install
 
-One repo serves four agents: the shared `skills/x-articles/SKILL.md` plus a thin manifest per platform. Claude Code and Codex also pick up the bundled `.mcp.json`, which pre-configures the XMCP endpoint.
+One repo serves five agents: the shared `skills/x-articles/SKILL.md` plus a thin manifest per platform.
+
+**Antigravity:** clone this repo, install dependencies, and symlink it into `~/.gemini/config/plugins/`:
+
+```sh
+git clone https://github.com/WeZZard/pi-x-articles
+cd pi-x-articles && npm install
+ln -s "$PWD" ~/.gemini/config/plugins/x-articles
+```
+
+Then open `customization://x-articles` in Antigravity, fill in `X_OAUTH_CONSUMER_KEY`, `X_OAUTH_CONSUMER_SECRET`, and `X_BEARER_TOKEN` (with `http://127.0.0.1:8976/oauth/callback` registered on your X Developer App), and toggle the plugin on.
 
 **pi:**
 

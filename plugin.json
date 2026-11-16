@@ -1,0 +1,17 @@
+{
+  "name": "x-articles",
+  "displayName": "X Articles",
+  "version": "0.1.2",
+  "description": "Publish Markdown files as X Articles via XMCP and the official X API v2 Articles endpoints: deterministic Markdown conversion, image upload, and draft-then-publish with a human checkpoint.",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "WeZZard",
+    "url": "https://github.com/WeZZard"
+  },
+  "repository": "https://github.com/WeZZard/pi-x-articles",
+  "suggestedPrompts": [
+    "Publish index.md as an X Article draft",
+    "Scan my Markdown post for sensitive info and create an X Article draft",
+    "Publish zh-Hans/index.md with its cover image as an X Article draft"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "x-articles-xmcp": {
+      "command": "/bin/sh",
+      "args": [
+        "scripts/run-xmcp-stdio.sh"
+      ],
+      "cwd": ".",
+      "env": {
+        "X_OAUTH_CONSUMER_KEY": "${X_OAUTH_CONSUMER_KEY}",
+        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}",
+        "X_BEARER_TOKEN": "${X_BEARER_TOKEN}",
+        "X_API_TOOL_ALLOWLIST": "articleCreateDraft,articlePublish,initializeMediaUpload,appendMediaUpload,finalizeMediaUpload,getMediaUploadStatus",
+        "X_ARTICLES_LOCAL_HELPERS": "1"
+      },
+      "variables": [
+        {
+          "name": "X_OAUTH_CONSUMER_KEY",
+          "title": "X OAuth Consumer Key",
+          "description": "API Key (Consumer Key) from https://console.x.com -> Apps -> Keys and tokens."
+        },
+        {
+          "name": "X_OAUTH_CONSUMER_SECRET",
+          "title": "X OAuth Consumer Secret",
+          "description": "API Key Secret (Consumer Secret) from https://console.x.com -> Apps -> Keys and tokens."
+        },
+        {
+          "name": "X_BEARER_TOKEN",
+          "title": "X Bearer Token",
+          "description": "Bearer Token from https://console.x.com -> Apps -> Keys and tokens."
+        }
+      ]
+    }
+  }
+}

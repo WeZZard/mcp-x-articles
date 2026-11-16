@@ -9,12 +9,20 @@ Publish a Markdown file as an X Article. Conversion is deterministic (a script, 
 
 ## Prerequisites
 
-- **XMCP** running and reachable (default `http://127.0.0.1:8000/mcp`) with these tools available: `articleCreateDraft`, `articlePublish`, `initializeMediaUpload`, `appendMediaUpload`, `finalizeMediaUpload`, `getMediaUploadStatus`.
+- **XMCP** reachable — either through Antigravity's bundled `x-articles-xmcp` stdio MCP server (`mcp_config.json`) or a local HTTP XMCP instance (`http://127.0.0.1:8000/mcp`) — with these tools available: `articleCreateDraft`, `articlePublish`, `initializeMediaUpload`, `appendMediaUpload`, `finalizeMediaUpload`, `getMediaUploadStatus`.
 - An X Developer app with credits (the X API is pay-per-use; a depleted balance returns `402 Payment Required`).
 
-If XMCP is not running or the articles tools are missing, run the setup procedure below **before** anything else. If it is running, skip setup.
+If XMCP is not running or the articles tools are missing, run the setup procedure below **before** anything else. If the tools are already available, skip setup.
 
 ### Setup procedure (first run only)
+
+**On Antigravity (bundled `x-articles-xmcp` MCP server):**
+
+1. Tell the user to register the callback URL `http://127.0.0.1:8976/oauth/callback` in their X Developer App settings (`https://console.x.com` → App → Authentication settings).
+2. Direct the user to `[x-articles](customization://x-articles)` to fill in `X_OAUTH_CONSUMER_KEY`, `X_OAUTH_CONSUMER_SECRET`, and `X_BEARER_TOKEN` in the plugin setup form, then toggle the plugin **on**.
+3. On first startup, `x-articles-xmcp` opens a browser tab for OAuth 1.0a consent and caches the user token in `~/.config/x-articles/oauth1_tokens.json` (`0600`). Wait for the user to complete consent and confirm the MCP tools are loaded before making any X API call.
+
+**On pi, Claude Code, Codex, and OpenCode (HTTP XMCP at `http://127.0.0.1:8000/mcp`):**
 
 1. Clone https://github.com/xdevplatform/xmcp and install dependencies per its README (Python 3.9+, virtual environment). Choose commands for the user's OS — do not assume Unix.
 2. Create its `.env` from `env.example`. Leave `X_OAUTH_CONSUMER_KEY`, `X_OAUTH_CONSUMER_SECRET`, `X_BEARER_TOKEN` blank and **stop**: the user fills these from https://console.x.com.
@@ -38,7 +46,7 @@ Run this **before any upload or X API call**. Nothing with live credentials, fin
 
 ## Publish workflow
 
-Resolve `<pkg>` as the directory containing this skill's package (the `scripts/` directory sits beside `skills/`). If you reached this SKILL.md through a symlinked skill directory (the common OpenCode install), resolve the symlink first — `<pkg>` is the real repository root, not the directory the symlink lives in.
+Resolve `<pkg>` as the directory containing this skill's package (the `scripts/` directory sits beside `skills/`). If you reached this SKILL.md through a symlinked skill or plugin directory, resolve the symlink first — `<pkg>` is the real repository root, not the directory the symlink lives in.
 
 1. **Convert.** Run:
    ```sh
@@ -46,9 +54,9 @@ Resolve `<pkg>` as the directory containing this skill's package (the `scripts/`
    ```
    Read `draft.json`. Title resolution: `--title` flag > YAML frontmatter `title` > first H1 > file name.
 2. **Report degradations.** Show the user every entry in `draft.json.warnings` (nested lists flattened, HTML blocks dropped, heading clamping, title fallback). Do not silently proceed past content loss.
-3. **Upload images.** For each src in `draft.json.pending_images`, upload the local file via `initializeMediaUpload` → `appendMediaUpload` → `finalizeMediaUpload` (check `getMediaUploadStatus` until processing succeeds), media category `tweet_image`. Build a media map `{ "<src>": { "media_id": "...", "media_category": "tweet_image" } }`, save it as `media-map.json`, and re-run the converter with `--media-map media-map.json`. Remote image URLs: download them first, then upload. If an image cannot be uploaded, tell the user and ask whether to drop it or abort.
-4. **Optional cover.** If the user wants a cover image, upload it the same way and include `cover_media: { media_category, media_id }` in the draft call.
-5. **Create the draft.** Call `articleCreateDraft` with `{ title, content_state }` (plus `cover_media` if any) from the final `draft.json`. Report the returned article ID and the editor URL `https://x.com/compose/articles/edit/<id>`.
+3. **Upload images.** For each src in `draft.json.pending_images`, upload the local file: if `uploadLocalMedia` is available on the XMCP server (bundled in Antigravity's `x-articles-xmcp`), call `uploadLocalMedia({ file_path, media_category: "tweet_image" })` so raw base64 bytes never transit LLM context; otherwise run `initializeMediaUpload` → `appendMediaUpload` → `finalizeMediaUpload` (check `getMediaUploadStatus` until processing succeeds), media category `tweet_image`. Build a media map `{ "<src>": { "media_id": "...", "media_category": "tweet_image" } }`, save it as `media-map.json`, and re-run the converter with `--media-map media-map.json`. Remote image URLs: download them first, then upload. If an image cannot be uploaded, tell the user and ask whether to drop it or abort.
+4. **Optional cover.** If a `cover-image-x-article.png` sits alongside `<file.md>` (or the user specifies a cover image), ask or confirm if needed, upload it the same way, and pass its `media_id` as the cover media.
+5. **Create the draft.** If `createArticleDraftFromJsonFile` is available on the XMCP server, call `createArticleDraftFromJsonFile({ draft_json_path, cover_media_id })` so the deterministic `content_state` JSON is read straight from disk without LLM re-serialization; otherwise call `articleCreateDraft` with `{ title, content_state }` (plus `cover_media` if any) from the final `draft.json`. Report the returned article ID and the editor URL `https://x.com/compose/articles/edit/<id>`.
 6. **CHECKPOINT — stop here.** Do not publish until the user explicitly says to (e.g. "发布" / "publish"). Creating the draft is reversible; publishing is not.
 7. **Publish.** On explicit approval, call `articlePublish` with the article ID. Report the returned `post_id` — the published Article is attached to that post (`https://x.com/<handle>/status/<post_id>`).
 
