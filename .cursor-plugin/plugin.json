@@ -1,0 +1,39 @@
+{
+  "$schema": "https://cursor.com/schemas/plugin.schema.json",
+  "name": "mcp-x-articles",
+  "version": "0.2.0",
+  "description": "Publish Markdown files as X Articles via official X API v2.",
+  "author": {
+    "name": "WeZZard",
+    "url": "https://github.com/WeZZard"
+  },
+  "license": "MIT",
+  "logo": "assets/logo.svg",
+  "category": "Productivity",
+  "skills": "./skills",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "X_OAUTH_CONSUMER_KEY": {
+        "type": "string",
+        "description": "Optional X API Key (leave blank to configure via the local browser Keychain setup card)."
+      },
+      "X_OAUTH_CONSUMER_SECRET": {
+        "type": "string",
+        "description": "Optional X API Key Secret (leave blank to configure via the local browser Keychain setup card)."
+      }
+    }
+  },
+  "mcpServers": {
+    "x-articles": {
+      "command": "node",
+      "args": [
+        "${CURSOR_PLUGIN_ROOT}/dist/server.mjs"
+      ],
+      "env": {
+        "X_OAUTH_CONSUMER_KEY": "${X_OAUTH_CONSUMER_KEY}",
+        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}"
+      }
+    }
+  }
+}

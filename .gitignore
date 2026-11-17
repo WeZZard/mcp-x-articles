@@ -2,3 +2,4 @@ node_modules/
 .plans/
 .venv/
 __pycache__/
+.release/

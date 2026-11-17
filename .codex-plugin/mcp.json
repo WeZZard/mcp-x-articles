@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "x_articles": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "./dist/server.mjs"
+      ]
+    }
+  }
+}

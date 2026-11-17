@@ -1,24 +1,75 @@
 {
-  "name": "pi-x-articles",
-  "version": "0.1.2",
-  "description": "Publish Markdown files as X Articles via XMCP and the official X API v2 Articles endpoints: deterministic Markdown → content_state conversion, image upload, draft-then-publish with a human checkpoint.",
-  "keywords": [
-    "pi-package"
-  ],
-  "license": "MIT",
+  "name": "@wezzard/mcp-x-articles",
+  "version": "0.2.0",
   "type": "module",
-  "engines": {
-    "node": ">=18"
+  "description": "MCP server and multi-agent plugin for publishing Markdown files as X Articles via the official X API v2 Articles endpoints: deterministic Markdown conversion, zero-token media upload, macOS Keychain secret storage, and two-step human review.",
+  "license": "MIT",
+  "author": {
+    "name": "WeZZard",
+    "url": "https://github.com/WeZZard"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WeZZard/mcp-x-articles.git"
+  },
+  "homepage": "https://github.com/WeZZard/mcp-x-articles#readme",
+  "bugs": {
+    "url": "https://github.com/WeZZard/mcp-x-articles/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "mcp",
+    "mcp-server",
+    "claude-code",
+    "codex",
+    "cursor",
+    "antigravity",
+    "x",
+    "twitter",
+    "articles",
+    "markdown"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "mcp-x-articles": "dist/server.mjs"
+  },
+  "files": [
+    "dist/",
+    "skills/",
+    "assets/",
+    "README.md",
+    "LICENSE",
+    "plugin.json",
+    "mcp_config.json",
+    "pi-mcp.json",
+    ".mcp.json",
+    ".claude-plugin/",
+    ".codex-plugin/",
+    ".cursor-plugin/"
+  ],
   "pi": {
+    "mcp": "./pi-mcp.json",
     "skills": [
       "./skills"
     ]
   },
   "scripts": {
-    "test": "node test/run-tests.mjs"
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/run-tests.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "check": "npm run build && npm run typecheck && npm test && npm run verify:package"
   },
-  "dependencies": {
-    "marked": "^18.0.7"
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/node": "^22.13.10",
+    "esbuild": "^0.25.1",
+    "marked": "^18.0.7",
+    "typescript": "^5.8.2"
   }
 }

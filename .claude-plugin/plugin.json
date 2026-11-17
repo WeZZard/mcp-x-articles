@@ -1,18 +1,18 @@
 {
-  "name": "x-articles",
-  "version": "0.1.2",
-  "description": "Publish Markdown files as X Articles via XMCP and the official X API v2 Articles endpoints.",
+  "name": "mcp-x-articles",
+  "version": "0.2.0",
+  "description": "Publish Markdown files as X Articles via official X API v2: deterministic conversion, zero-token media upload, and macOS Keychain secret storage.",
   "author": {
     "name": "WeZZard",
     "url": "https://github.com/WeZZard"
   },
-  "repository": "https://github.com/WeZZard/pi-x-articles",
+  "repository": "https://github.com/WeZZard/mcp-x-articles",
   "license": "MIT",
   "keywords": [
     "x",
     "twitter",
     "articles",
     "markdown",
-    "publish"
+    "mcp"
   ]
 }

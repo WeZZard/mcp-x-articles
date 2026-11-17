@@ -1,0 +1,14 @@
+{
+  "name": "mcp-x-articles",
+  "description": "The mcp-x-articles Claude Code plugin",
+  "owner": {
+    "name": "WeZZard"
+  },
+  "plugins": [
+    {
+      "name": "mcp-x-articles",
+      "source": "./",
+      "description": "Publish Markdown files as X Articles with deterministic AST compilation, zero-token media uploads, and macOS Keychain secret storage."
+    }
+  ]
+}

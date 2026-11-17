@@ -1,31 +1,31 @@
 {
-  "name": "x-articles",
-  "version": "0.1.2",
-  "description": "Publish Markdown files as X Articles via XMCP and the official X API v2 Articles endpoints.",
+  "name": "mcp-x-articles",
+  "version": "0.2.0",
+  "description": "Publish Markdown files as X Articles via official X API v2.",
   "author": {
     "name": "WeZZard",
     "url": "https://github.com/WeZZard"
   },
-  "repository": "https://github.com/WeZZard/pi-x-articles",
+  "repository": "https://github.com/WeZZard/mcp-x-articles",
   "license": "MIT",
   "keywords": [
     "x",
     "twitter",
     "articles",
     "markdown",
-    "publish"
+    "mcp"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "X Articles",
     "shortDescription": "Publish Markdown as X Articles",
-    "longDescription": "Convert a Markdown file to X's content_state with a deterministic script, upload images, create a draft Article through the official X API (via XMCP), and publish after your confirmation.",
+    "longDescription": "Deterministic Markdown conversion, zero-token image upload, macOS Keychain secret storage, and two-step human review for X Articles.",
     "developerName": "WeZZard",
     "category": "Productivity",
     "defaultPrompt": [
       "Publish post.md as an X Article draft",
-      "Convert my Markdown post and create an X Article draft"
+      "Run X Article preflight on index.md"
     ]
   }
 }
