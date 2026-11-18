@@ -1,6 +1,6 @@
 {
   "name": "mcp-x-articles",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Publish Markdown files as X Articles via official X API v2.",
   "author": {
     "name": "WeZZard",
