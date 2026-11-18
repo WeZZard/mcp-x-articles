@@ -54,7 +54,9 @@ assert.equal(pkg.dependencies, undefined, 'package.json must have zero runtime d
 const packJson = JSON.parse(
   execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8' }),
 );
-const packedFiles = new Set(packJson[0].files.map((f) => f.path));
+const packEntry = Array.isArray(packJson) ? packJson[0] : packJson;
+assert.ok(Array.isArray(packEntry?.files), 'npm pack --dry-run --json returned no files list');
+const packedFiles = new Set(packEntry.files.map((f) => f.path));
 const expectedInTarball = [
   'dist/server.mjs',
   'skills/x-articles/SKILL.md',
