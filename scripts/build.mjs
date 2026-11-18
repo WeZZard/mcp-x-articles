@@ -33,6 +33,20 @@ await build({
 
 chmodSync(outFile, 0o755);
 
+// Sync version across all plugin manifests from package.json.
+const manifestPaths = [
+  'plugin.json',
+  '.claude-plugin/plugin.json',
+  '.codex-plugin/plugin.json',
+  '.cursor-plugin/plugin.json',
+];
+for (const rel of manifestPaths) {
+  const full = join(root, rel);
+  const doc = JSON.parse(readFileSync(full, 'utf8'));
+  doc.version = version;
+  writeFileSync(full, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+}
+
 // Keep pi-mcp.json version pinned to package.json version (matching @wezzard/mcp-relay).
 const piMcp = {
   mcpServers: {
@@ -47,4 +61,4 @@ const piMcp = {
 };
 writeFileSync(join(root, 'pi-mcp.json'), JSON.stringify(piMcp) + '\n', 'utf8');
 
-console.log(`Built dist/server.mjs and synced pi-mcp.json for ${pkg.name}@${version}`);
+console.log(`Built dist/server.mjs and synced manifests for ${pkg.name}@${version}`);

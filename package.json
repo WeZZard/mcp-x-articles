@@ -1,6 +1,6 @@
 {
   "name": "@wezzard/mcp-x-articles",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "MCP server and multi-agent plugin for publishing Markdown files as X Articles via the official X API v2 Articles endpoints: deterministic Markdown conversion, zero-token media upload, macOS Keychain secret storage, and two-step human review.",
   "license": "MIT",
@@ -60,7 +60,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node test/run-tests.mjs",
     "verify:package": "node scripts/verify-package.mjs",
-    "check": "npm run build && npm run typecheck && npm test && npm run verify:package"
+    "check": "npm run build && npm run typecheck && npm test && npm run verify:package",
+    "release": "node scripts/release.mjs"
   },
   "engines": {
     "node": ">=20"

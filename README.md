@@ -127,7 +127,8 @@ Add `@wezzard/mcp-x-articles` to `claude_desktop_config.json`:
 
 ```sh
 npm install
-npm run check   # build dist/server.mjs + tsc typecheck + test suite + tarball & isolation check
+npm run check            # build dist/server.mjs + tsc typecheck + test suite + tarball & isolation check
+npm run release -- patch # bump version, sync manifests, check, commit, tag, and push for OIDC release
 ```
 
 ## License

@@ -25,8 +25,10 @@ import {
   uploadMediaBuffer,
 } from './x-api.js';
 
+declare const __PACKAGE_VERSION__: string;
+
 export const PACKAGE_NAME = '@wezzard/mcp-x-articles';
-export const PACKAGE_VERSION = '0.2.0';
+export const PACKAGE_VERSION = __PACKAGE_VERSION__;
 
 const MAX_INLINE_PREVIEW_BYTES = 5 * 1024 * 1024;
 const PREVIEWABLE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);

@@ -1,6 +1,6 @@
 {
   "name": "mcp-x-articles",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Publish Markdown files as X Articles via official X API v2: deterministic conversion, zero-token media upload, and macOS Keychain secret storage.",
   "author": {
     "name": "WeZZard",
