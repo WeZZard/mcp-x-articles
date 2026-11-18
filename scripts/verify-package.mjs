@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,44 +49,45 @@ assert.ok(agyMcpRaw.includes('dist/server.mjs'));
 assert.ok(!agyMcpRaw.includes('xmcp-stdio.py'), 'mcp_config.json must not reference legacy Python script');
 assert.ok(!agyMcpRaw.includes('X_BEARER_TOKEN'), 'mcp_config.json must not include unused X_BEARER_TOKEN');
 
-// 3. Verify npm pack --dry-run includes all required artifacts and zero runtime dependencies.
+// 3. Pack an actual npm tarball into an isolated temp directory, extract it, verify every
+//    required file is present with zero runtime dependencies, and run an MCP stdio handshake
+//    directly against the unpacked dist/server.mjs (no node_modules!).
 assert.equal(pkg.dependencies, undefined, 'package.json must have zero runtime dependencies');
-const packJson = JSON.parse(
-  execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8' }),
-);
-const packEntry = Array.isArray(packJson) ? packJson[0] : packJson;
-assert.ok(Array.isArray(packEntry?.files), 'npm pack --dry-run --json returned no files list');
-const packedFiles = new Set(packEntry.files.map((f) => f.path));
-const expectedInTarball = [
-  'dist/server.mjs',
-  'skills/x-articles/SKILL.md',
-  'plugin.json',
-  'mcp_config.json',
-  'pi-mcp.json',
-  '.mcp.json',
-  '.claude-plugin/plugin.json',
-  '.claude-plugin/marketplace.json',
-  '.codex-plugin/plugin.json',
-  '.codex-plugin/mcp.json',
-  '.cursor-plugin/plugin.json',
-];
-for (const reqPath of expectedInTarball) {
-  assert.ok(packedFiles.has(reqPath), `Missing ${reqPath} in npm pack tarball`);
-}
-
-// 4. Verify zero-install execution: copy dist/server.mjs alone to an empty temp directory
-//    (no node_modules!) and complete an MCP stdio handshake + listTools + listPrompts.
 const isolatedDir = mkdtempSync(join(tmpdir(), 'mcp-xa-isolated-'));
 try {
-  const isolatedEntry = join(isolatedDir, 'server.mjs');
-  assert.ok(existsSync(join(root, 'dist', 'server.mjs')), 'dist/server.mjs missing');
-  copyFileSync(join(root, 'dist', 'server.mjs'), isolatedEntry);
+  execFileSync('npm', ['pack', '--silent', '--pack-destination', isolatedDir], {
+    cwd: root,
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
+  const tgzName = readdirSync(isolatedDir).find((name) => name.endsWith('.tgz'));
+  assert.ok(tgzName, 'npm pack did not produce a .tgz archive');
+  execFileSync('tar', ['-xzf', join(isolatedDir, tgzName), '-C', isolatedDir]);
 
-  const verOut = execFileSync('node', [isolatedEntry, '--version'], { encoding: 'utf8' }).trim();
+  const unpackedRoot = join(isolatedDir, 'package');
+  const expectedInTarball = [
+    'package.json',
+    'dist/server.mjs',
+    'skills/x-articles/SKILL.md',
+    'plugin.json',
+    'mcp_config.json',
+    'pi-mcp.json',
+    '.mcp.json',
+    '.claude-plugin/plugin.json',
+    '.claude-plugin/marketplace.json',
+    '.codex-plugin/plugin.json',
+    '.codex-plugin/mcp.json',
+    '.cursor-plugin/plugin.json',
+  ];
+  for (const reqPath of expectedInTarball) {
+    assert.ok(existsSync(join(unpackedRoot, reqPath)), `Missing ${reqPath} in npm pack tarball`);
+  }
+
+  const isolatedEntry = join(unpackedRoot, 'dist', 'server.mjs');
+  const verOut = execFileSync(process.execPath, [isolatedEntry, '--version'], { encoding: 'utf8' }).trim();
   assert.equal(verOut, version);
 
   const transport = new StdioClientTransport({
-    command: 'node',
+    command: process.execPath,
     args: [isolatedEntry],
     cwd: isolatedDir,
     stderr: 'pipe',
