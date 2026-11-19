@@ -1,1 +1,1 @@
-{"mcpServers":{"x-articles":{"command":"npx","args":["-y","@wezzard/mcp-x-articles@0.2.3"],"lifecycle":"lazy","directTools":true,"toolPrefix":"none"}}}
+{"mcpServers":{"x-articles":{"command":"npx","args":["-y","@wezzard/mcp-x-articles@0.2.4"],"lifecycle":"lazy","directTools":true,"toolPrefix":"none"}}}
