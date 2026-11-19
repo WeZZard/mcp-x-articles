@@ -7261,11 +7261,24 @@ import { fileURLToPath } from "node:url";
 // src/keychain.ts
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 var DEFAULT_KEYCHAIN_SERVICE = "@wezzard/mcp-x-articles";
-var CONSUMER_ACCOUNT = "consumer_credentials";
+var CLIENT_ACCOUNT = "oauth2_client_credentials";
+var REFRESH_LOCK_STALE_MS = 3e4;
+var REFRESH_LOCK_TIMEOUT_MS = 15e3;
+var REFRESH_LOCK_POLL_MS = 50;
 function keychainServiceName() {
   return (process.env.MCP_X_ARTICLES_KEYCHAIN_SERVICE ?? "").trim() || DEFAULT_KEYCHAIN_SERVICE;
 }
@@ -7282,7 +7295,7 @@ function detectHostConfigUi() {
       hasNativeConfigUi: true,
       hostName: "antigravity",
       configUiUrl,
-      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH_CONSUMER_KEY and X_OAUTH_CONSUMER_SECRET (and optionally X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET).`
+      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate).`
     };
   }
   if ((process.env.CURSOR_PLUGIN_ROOT ?? "").trim()) {
@@ -7290,14 +7303,14 @@ function detectHostConfigUi() {
       hasNativeConfigUi: true,
       hostName: "cursor",
       configUiUrl: null,
-      setupInstruction: "Open Cursor's MCP plugin settings UI and configure X_OAUTH_CONSUMER_KEY and X_OAUTH_CONSUMER_SECRET (and optionally X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET)."
+      setupInstruction: "Open Cursor's MCP plugin settings UI and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate)."
     };
   }
   return {
     hasNativeConfigUi: false,
     hostName: "none",
     configUiUrl: null,
-    setupInstruction: "Call `x_article_auth_status({ login: true })` to open the local browser setup form (saves API Key and Secret directly to macOS Keychain and completes X OAuth), or run `npx @wezzard/mcp-x-articles auth` in a terminal."
+    setupInstruction: "Call `x_article_auth_status({ login: true })` to open the local browser setup form (saves OAuth 2.0 Client ID/Secret directly to macOS Keychain and completes X OAuth 2.0 PKCE with offline.access), or run `npx @wezzard/mcp-x-articles auth` in a terminal."
   };
 }
 function cleanEnvValue(raw) {
@@ -7305,19 +7318,25 @@ function cleanEnvValue(raw) {
   if (!val || val.startsWith("${")) return "";
   return val;
 }
+function sha256Hex(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+function clientKeyId(clientId) {
+  return sha256Hex(clientId).slice(0, 16);
+}
 function configDirPath() {
   const xdg = (process.env.XDG_CONFIG_HOME ?? "").trim();
   const base = xdg ? xdg : join(homedir(), ".config");
   return join(base, "mcp-x-articles");
 }
-function credentialsFilePath() {
-  return join(configDirPath(), "credentials.json");
+function clientCredentialsFilePath() {
+  return join(configDirPath(), "oauth2_client.json");
 }
 function tokensFilePath() {
-  return join(configDirPath(), "oauth1_tokens.json");
+  return join(configDirPath(), "oauth2_tokens.json");
 }
-function consumerKeyId(consumerKey) {
-  return createHash("sha256").update(consumerKey, "utf8").digest("hex").slice(0, 16);
+function refreshLockFilePath() {
+  return join(configDirPath(), "oauth2_refresh.lock");
 }
 function isMacKeychainAvailable() {
   if (process.platform !== "darwin") return false;
@@ -7362,13 +7381,6 @@ function keychainDelete(account) {
   } catch {
   }
 }
-function clearConsumerCredentials() {
-  keychainDelete(CONSUMER_ACCOUNT);
-  const file = credentialsFilePath();
-  if (existsSync(file)) {
-    writeAtomic0600(file, {});
-  }
-}
 function writeAtomic0600(filePath, data) {
   const dir = configDirPath();
   mkdirSync(dir, { recursive: true, mode: 448 });
@@ -7389,14 +7401,21 @@ function readJsonSafe(filePath) {
     return null;
   }
 }
-function loadConsumerCredentials() {
-  const envKey = cleanEnvValue(process.env.X_OAUTH_CONSUMER_KEY);
-  const envSecret = cleanEnvValue(process.env.X_OAUTH_CONSUMER_SECRET);
-  if (envKey && envSecret) {
+function clearOAuth2ClientCredentials() {
+  keychainDelete(CLIENT_ACCOUNT);
+  const file = clientCredentialsFilePath();
+  if (existsSync(file)) {
+    writeAtomic0600(file, {});
+  }
+}
+function loadOAuth2ClientCredentials() {
+  const envId = cleanEnvValue(process.env.X_OAUTH2_CLIENT_ID) || cleanEnvValue(process.env.X_CLIENT_ID);
+  const envSecret = cleanEnvValue(process.env.X_OAUTH2_CLIENT_SECRET) || cleanEnvValue(process.env.X_CLIENT_SECRET) || void 0;
+  if (envId) {
     return {
       credentials: {
-        consumerKey: envKey,
-        consumerSecret: envSecret
+        clientId: envId,
+        ...envSecret ? { clientSecret: envSecret } : {}
       },
       source: "env"
     };
@@ -7404,15 +7423,15 @@ function loadConsumerCredentials() {
   if (detectHostConfigUi().hasNativeConfigUi && process.env.MCP_X_ARTICLES_ALLOW_KEYCHAIN_IN_NATIVE_UI !== "1") {
     return { credentials: null, source: "none" };
   }
-  const kcRaw = keychainRead(CONSUMER_ACCOUNT);
+  const kcRaw = keychainRead(CLIENT_ACCOUNT);
   if (kcRaw) {
     try {
       const parsed = JSON.parse(kcRaw);
-      if (parsed.consumerKey && parsed.consumerSecret) {
+      if (parsed.clientId) {
         return {
           credentials: {
-            consumerKey: parsed.consumerKey,
-            consumerSecret: parsed.consumerSecret
+            clientId: parsed.clientId,
+            ...parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}
           },
           source: "macos-keychain"
         };
@@ -7420,50 +7439,46 @@ function loadConsumerCredentials() {
     } catch {
     }
   }
-  const fileCreds = readJsonSafe(credentialsFilePath());
-  if (fileCreds?.consumerKey && fileCreds?.consumerSecret) {
+  const fileCreds = readJsonSafe(clientCredentialsFilePath());
+  if (fileCreds?.clientId) {
     return {
       credentials: {
-        consumerKey: fileCreds.consumerKey,
-        consumerSecret: fileCreds.consumerSecret
+        clientId: fileCreds.clientId,
+        ...fileCreds.clientSecret ? { clientSecret: fileCreds.clientSecret } : {}
       },
       source: "xdg-config"
     };
   }
   return { credentials: null, source: "none" };
 }
-function saveConsumerCredentials(creds) {
+function saveOAuth2ClientCredentials(creds) {
+  const trimmedSecret = (creds.clientSecret ?? "").trim();
   const payload = {
-    consumerKey: creds.consumerKey.trim(),
-    consumerSecret: creds.consumerSecret.trim()
+    clientId: creds.clientId.trim(),
+    ...trimmedSecret ? { clientSecret: trimmedSecret } : {}
   };
-  if (keychainWrite(CONSUMER_ACCOUNT, JSON.stringify(payload))) {
+  if (keychainWrite(CLIENT_ACCOUNT, JSON.stringify(payload))) {
     return "macos-keychain";
   }
-  writeAtomic0600(credentialsFilePath(), payload);
+  writeAtomic0600(clientCredentialsFilePath(), payload);
   return "xdg-config";
 }
-function loadUserOAuthTokens(consumerKey) {
-  const envTok = cleanEnvValue(process.env.X_OAUTH_ACCESS_TOKEN);
-  const envSec = cleanEnvValue(process.env.X_OAUTH_ACCESS_TOKEN_SECRET);
-  if (envTok && envSec) {
-    return {
-      tokens: { accessToken: envTok, accessSecret: envSec, savedAt: 0 },
-      source: "env"
-    };
-  }
-  const keyId = consumerKeyId(consumerKey);
-  const kcAccount = `oauth1_user_token:${keyId}`;
+function readStoredOAuth2UserTokens(clientId) {
+  const keyId = clientKeyId(clientId);
+  const kcAccount = `oauth2_user_token:${keyId}`;
   const kcRaw = keychainRead(kcAccount);
   if (kcRaw) {
     try {
       const parsed = JSON.parse(kcRaw);
-      if (parsed.accessToken && parsed.accessSecret) {
+      if (parsed.accessToken || parsed.refreshToken) {
         return {
           tokens: {
-            accessToken: parsed.accessToken,
-            accessSecret: parsed.accessSecret,
-            savedAt: parsed.savedAt ?? 0
+            accessToken: parsed.accessToken ?? "",
+            ...parsed.refreshToken ? { refreshToken: parsed.refreshToken } : {},
+            expiresAt: Number(parsed.expiresAt ?? 0),
+            ...parsed.scope ? { scope: parsed.scope } : {},
+            savedAt: Number(parsed.savedAt ?? 0),
+            ...parsed.seedRefreshTokenHash ? { seedRefreshTokenHash: parsed.seedRefreshTokenHash } : {}
           },
           source: "macos-keychain"
         };
@@ -7473,26 +7488,68 @@ function loadUserOAuthTokens(consumerKey) {
   }
   const map = readJsonSafe(tokensFilePath());
   const entry = map?.[keyId];
-  if (entry?.accessToken && entry?.accessSecret) {
+  if (entry && (entry.accessToken || entry.refreshToken)) {
     return {
       tokens: {
-        accessToken: entry.accessToken,
-        accessSecret: entry.accessSecret,
-        savedAt: entry.savedAt ?? 0
+        accessToken: entry.accessToken ?? "",
+        ...entry.refreshToken ? { refreshToken: entry.refreshToken } : {},
+        expiresAt: Number(entry.expiresAt ?? 0),
+        ...entry.scope ? { scope: entry.scope } : {},
+        savedAt: Number(entry.savedAt ?? 0),
+        ...entry.seedRefreshTokenHash ? { seedRefreshTokenHash: entry.seedRefreshTokenHash } : {}
       },
       source: "xdg-config"
     };
   }
   return { tokens: null, source: "none" };
 }
-function saveUserOAuthTokens(consumerKey, accessToken, accessSecret) {
-  const keyId = consumerKeyId(consumerKey);
+function loadOAuth2UserTokens(clientId) {
+  const stored = readStoredOAuth2UserTokens(clientId);
+  const envRefresh = cleanEnvValue(process.env.X_OAUTH2_REFRESH_TOKEN);
+  const envAccess = cleanEnvValue(process.env.X_OAUTH2_ACCESS_TOKEN);
+  const now = Math.floor(Date.now() / 1e3);
+  if (envRefresh) {
+    const envSeedHash = sha256Hex(envRefresh);
+    if (stored.tokens && stored.tokens.seedRefreshTokenHash === envSeedHash) {
+      return stored;
+    }
+    return {
+      tokens: {
+        accessToken: envAccess || "",
+        refreshToken: envRefresh,
+        expiresAt: envAccess ? now + 300 : 0,
+        savedAt: 0,
+        seedRefreshTokenHash: envSeedHash
+      },
+      source: "env"
+    };
+  }
+  if (envAccess) {
+    if (stored.tokens?.refreshToken && stored.tokens.accessToken) {
+      return stored;
+    }
+    return {
+      tokens: {
+        accessToken: envAccess,
+        expiresAt: now + 3600,
+        savedAt: 0
+      },
+      source: "env"
+    };
+  }
+  return stored;
+}
+function saveOAuth2UserTokens(clientId, tokens) {
+  const keyId = clientKeyId(clientId);
   const record2 = {
-    accessToken: accessToken.trim(),
-    accessSecret: accessSecret.trim(),
-    savedAt: Math.floor(Date.now() / 1e3)
+    accessToken: tokens.accessToken.trim(),
+    ...tokens.refreshToken?.trim() ? { refreshToken: tokens.refreshToken.trim() } : {},
+    expiresAt: Math.floor(Number(tokens.expiresAt || 0)),
+    ...tokens.scope?.trim() ? { scope: tokens.scope.trim() } : {},
+    savedAt: tokens.savedAt ?? Math.floor(Date.now() / 1e3),
+    ...tokens.seedRefreshTokenHash?.trim() ? { seedRefreshTokenHash: tokens.seedRefreshTokenHash.trim() } : {}
   };
-  if (keychainWrite(`oauth1_user_token:${keyId}`, JSON.stringify(record2))) {
+  if (keychainWrite(`oauth2_user_token:${keyId}`, JSON.stringify(record2))) {
     return "macos-keychain";
   }
   const existing = readJsonSafe(tokensFilePath()) ?? {};
@@ -7500,9 +7557,9 @@ function saveUserOAuthTokens(consumerKey, accessToken, accessSecret) {
   writeAtomic0600(tokensFilePath(), existing);
   return "xdg-config";
 }
-function clearUserOAuthTokens(consumerKey) {
-  const keyId = consumerKeyId(consumerKey);
-  keychainDelete(`oauth1_user_token:${keyId}`);
+function clearOAuth2UserTokens(clientId) {
+  const keyId = clientKeyId(clientId);
+  keychainDelete(`oauth2_user_token:${keyId}`);
   const file = tokensFilePath();
   const existing = readJsonSafe(file);
   if (existing && keyId in existing) {
@@ -7510,61 +7567,179 @@ function clearUserOAuthTokens(consumerKey) {
     writeAtomic0600(file, existing);
   }
 }
-
-// src/oauth1.ts
-import { execFile } from "node:child_process";
-import { createHmac, randomBytes } from "node:crypto";
-import { createServer } from "node:http";
-function getOAuthBaseUrl() {
-  return (process.env.X_OAUTH_BASE_URL ?? "https://api.x.com").trim().replace(/\/+$/, "");
-}
-function rfc3986Encode(value) {
-  return encodeURIComponent(value).replace(
-    /[!'()*]/g,
-    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`
-  );
-}
-function signOAuth1Header(options) {
-  const parsedUrl = new URL(options.url);
-  const baseUri = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname}`;
-  const method = options.method.toUpperCase();
-  const oauthParams = {
-    oauth_consumer_key: options.credentials.consumerKey,
-    oauth_nonce: options.nonce ?? randomBytes(16).toString("hex"),
-    oauth_signature_method: "HMAC-SHA1",
-    oauth_timestamp: options.timestamp ?? String(Math.floor(Date.now() / 1e3)),
-    oauth_version: "1.0",
-    ...options.credentials.tokenKey ? { oauth_token: options.credentials.tokenKey } : {},
-    ...options.extraOAuthParams ?? {}
-  };
-  const pairs = [];
-  for (const [k, v2] of Object.entries(oauthParams)) {
-    pairs.push([rfc3986Encode(k), rfc3986Encode(v2)]);
-  }
-  for (const [k, v2] of parsedUrl.searchParams.entries()) {
-    pairs.push([rfc3986Encode(k), rfc3986Encode(v2)]);
-  }
-  if (options.formBodyParams) {
-    for (const [k, v2] of Object.entries(options.formBodyParams)) {
-      pairs.push([rfc3986Encode(k), rfc3986Encode(v2)]);
+async function withOAuth2RefreshLock(fn) {
+  const dir = configDirPath();
+  mkdirSync(dir, { recursive: true, mode: 448 });
+  const lockPath = refreshLockFilePath();
+  const deadline = Date.now() + REFRESH_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      const fd = openSync(lockPath, "wx", 384);
+      try {
+        writeFileSync(fd, `${process.pid}
+`, "utf8");
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        return await fn();
+      } finally {
+        rmSync(lockPath, { force: true });
+      }
+    } catch (err) {
+      const code = err?.code;
+      if (code !== "EEXIST") {
+        throw err;
+      }
+      try {
+        const st2 = statSync(lockPath);
+        if (Date.now() - st2.mtimeMs > REFRESH_LOCK_STALE_MS) {
+          rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for OAuth 2.0 refresh lock at ${lockPath}.`);
+      }
+      await new Promise((r) => setTimeout(r, REFRESH_LOCK_POLL_MS));
     }
   }
-  pairs.sort((a, b2) => {
-    if (a[0] === b2[0]) return a[1] < b2[1] ? -1 : a[1] > b2[1] ? 1 : 0;
-    return a[0] < b2[0] ? -1 : 1;
+}
+
+// src/oauth2.ts
+import { execFile } from "node:child_process";
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+var DEFAULT_OAUTH2_SCOPES = "tweet.read tweet.write users.read media.write offline.access";
+function getApiBaseUrl() {
+  return (process.env.X_API_BASE_URL ?? "https://api.x.com").trim().replace(/\/+$/, "");
+}
+function getOAuth2AuthorizeUrl() {
+  return (process.env.X_OAUTH2_AUTHORIZE_URL ?? "https://x.com/i/oauth2/authorize").trim().replace(/\/+$/, "");
+}
+function getOAuth2TokenUrl() {
+  const override = (process.env.X_OAUTH2_TOKEN_URL ?? "").trim();
+  if (override) return override.replace(/\/+$/, "");
+  return `${getApiBaseUrl()}/2/oauth2/token`;
+}
+function getOAuth2Scopes() {
+  const override = (process.env.X_OAUTH2_SCOPES ?? "").trim();
+  return override || DEFAULT_OAUTH2_SCOPES;
+}
+function generatePkcePair() {
+  const codeVerifier = randomBytes(64).toString("base64url");
+  const codeChallenge = createHash2("sha256").update(codeVerifier, "utf8").digest("base64url");
+  return { codeVerifier, codeChallenge };
+}
+function buildOAuth2AuthorizeUrl(params) {
+  const url = new URL(getOAuth2AuthorizeUrl());
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", params.clientId);
+  url.searchParams.set("redirect_uri", params.redirectUri);
+  url.searchParams.set("scope", params.scopes?.trim() || getOAuth2Scopes());
+  url.searchParams.set("state", params.state);
+  url.searchParams.set("code_challenge", params.codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  return url.toString();
+}
+var OAuth2TokenError = class extends Error {
+  status;
+  oauthError;
+  rawBody;
+  constructor(message, status, oauthError, rawBody = "") {
+    super(message);
+    this.name = "OAuth2TokenError";
+    this.status = status;
+    this.oauthError = oauthError;
+    this.rawBody = rawBody;
+  }
+};
+async function postTokenEndpoint(options) {
+  const tokenUrl = getOAuth2TokenUrl();
+  const body = new URLSearchParams();
+  const headers = {
+    "Content-Type": "application/x-www-form-urlencoded"
+  };
+  if (options.credentials.clientSecret) {
+    const basic = Buffer.from(
+      `${options.credentials.clientId}:${options.credentials.clientSecret}`,
+      "utf8"
+    ).toString("base64");
+    headers.Authorization = `Basic ${basic}`;
+  } else {
+    body.set("client_id", options.credentials.clientId);
+  }
+  for (const [k, v2] of Object.entries(options.params)) {
+    body.set(k, v2);
+  }
+  const resp = await fetch(tokenUrl, {
+    method: "POST",
+    headers,
+    body: body.toString()
   });
-  const normalizedParams = pairs.map(([k, v2]) => `${k}=${v2}`).join("&");
-  const baseString = `${method}&${rfc3986Encode(baseUri)}&${rfc3986Encode(normalizedParams)}`;
-  const signingKey = `${rfc3986Encode(options.credentials.consumerSecret)}&${rfc3986Encode(
-    options.credentials.tokenSecret ?? ""
-  )}`;
-  const signature = createHmac("sha1", signingKey).update(baseString, "utf8").digest("base64");
-  const headerEntries = [
-    ...Object.entries(oauthParams),
-    ["oauth_signature", signature]
-  ].sort((a, b2) => a[0] < b2[0] ? -1 : a[0] > b2[0] ? 1 : 0);
-  const headerBody = headerEntries.map(([k, v2]) => `${rfc3986Encode(k)}="${rfc3986Encode(v2)}"`).join(", ");
-  return `OAuth ${headerBody}`;
+  const text = await resp.text();
+  let parsed = {};
+  if (text.trim()) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = { raw: text };
+    }
+  }
+  if (!resp.ok) {
+    const oauthErr = typeof parsed.error === "string" ? parsed.error : typeof parsed.title === "string" ? parsed.title : void 0;
+    const desc = typeof parsed.error_description === "string" ? parsed.error_description : typeof parsed.detail === "string" ? parsed.detail : text;
+    throw new OAuth2TokenError(
+      `X OAuth 2.0 token request failed (HTTP ${resp.status}${oauthErr ? `, ${oauthErr}` : ""}): ${desc}`,
+      resp.status,
+      oauthErr,
+      text
+    );
+  }
+  const accessToken = typeof parsed.access_token === "string" ? parsed.access_token.trim() : "";
+  if (!accessToken) {
+    throw new OAuth2TokenError(
+      `X OAuth 2.0 token response did not contain access_token: ${text}`,
+      resp.status,
+      void 0,
+      text
+    );
+  }
+  const refreshToken = typeof parsed.refresh_token === "string" && parsed.refresh_token.trim() ? parsed.refresh_token.trim() : void 0;
+  const expiresIn = Math.max(60, Number(parsed.expires_in ?? 7200) || 7200);
+  const now = Math.floor(Date.now() / 1e3);
+  const scope = typeof parsed.scope === "string" ? parsed.scope.trim() : void 0;
+  const tokenType = typeof parsed.token_type === "string" ? parsed.token_type.trim() : void 0;
+  return {
+    accessToken,
+    refreshToken,
+    expiresIn,
+    expiresAt: now + expiresIn,
+    scope,
+    tokenType
+  };
+}
+async function exchangeAuthorizationCode(options) {
+  return postTokenEndpoint({
+    credentials: options.credentials,
+    params: {
+      grant_type: "authorization_code",
+      code: options.code,
+      redirect_uri: options.redirectUri,
+      code_verifier: options.codeVerifier
+    }
+  });
+}
+async function refreshOAuth2Token(options) {
+  return postTokenEndpoint({
+    credentials: options.credentials,
+    params: {
+      grant_type: "refresh_token",
+      refresh_token: options.refreshToken
+    }
+  });
 }
 function openBrowserUrl(targetUrl) {
   if (process.env.MCP_X_ARTICLES_NO_BROWSER === "1") return;
@@ -7582,7 +7757,7 @@ function openBrowserUrl(targetUrl) {
 function escapeHtml(raw) {
   return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
-function renderHtmlPage(title, bodyHtml, allowOpenLink = false) {
+function renderHtmlPage(title, bodyHtml) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7593,426 +7768,346 @@ function renderHtmlPage(title, bodyHtml, allowOpenLink = false) {
     :root { color-scheme: light dark; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      margin: 0; padding: 2.5rem 1.25rem;
-      display: flex; justify-content: center;
-      background: Canvas; color: CanvasText;
+      max-width: 560px;
+      margin: 48px auto;
+      padding: 0 20px;
+      line-height: 1.55;
     }
     .card {
-      width: 100%; max-width: 460px;
-      border: 1px solid GrayText; border-radius: 12px;
-      padding: 1.75rem; box-sizing: border-box;
+      border: 1px solid rgba(128,128,128,0.28);
+      border-radius: 14px;
+      padding: 26px 28px;
+      background: rgba(128,128,128,0.05);
     }
-    h1 { font-size: 1.15rem; margin: 0 0 0.5rem; }
-    p { font-size: 0.88rem; line-height: 1.5; opacity: 0.85; margin: 0 0 1rem; }
-    label { display: block; font-size: 0.8rem; font-weight: 600; margin: 0.85rem 0 0.35rem; }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    p.sub { opacity: 0.8; margin: 0 0 18px; font-size: 14px; }
+    label { display: block; font-weight: 600; font-size: 13px; margin: 14px 0 6px; }
     input[type="text"], input[type="password"] {
-      width: 100%; box-sizing: border-box; padding: 0.55rem 0.7rem;
-      border-radius: 8px; border: 1px solid GrayText;
-      background: Field; color: FieldText; font-family: ui-monospace, monospace; font-size: 0.85rem;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      font-size: 14px;
+      border: 1px solid rgba(128,128,128,0.38);
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: transparent;
     }
-    button, .btn {
-      display: inline-block; margin-top: 1.1rem; width: 100%; text-align: center;
-      padding: 0.65rem 1rem; border-radius: 8px; border: none;
-      background: #0f1419; color: #ffffff; font-weight: 600; font-size: 0.88rem;
-      cursor: pointer; text-decoration: none; box-sizing: border-box;
+    button {
+      margin-top: 20px;
+      width: 100%;
+      padding: 11px 16px;
+      font-size: 15px;
+      font-weight: 600;
+      border-radius: 9px;
+      border: none;
+      cursor: pointer;
+      background: #eff3f4;
+      color: #0f1419;
     }
-    @media (prefers-color-scheme: dark) {
-      button, .btn { background: #eff3f4; color: #0f1419; }
+    @media (prefers-color-scheme: light) {
+      button { background: #0f1419; color: #ffffff; }
     }
     .err {
-      padding: 0.65rem 0.8rem; border-radius: 8px; border: 1px solid #d93025;
-      font-size: 0.8rem; margin-bottom: 0.9rem;
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(244,33,46,0.5);
+      background: rgba(244,33,46,0.08);
+      font-size: 13px;
     }
-    code { font-family: ui-monospace, monospace; font-size: 0.8rem; }
+    .hint { font-size: 12px; opacity: 0.72; margin-top: 12px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   </style>
 </head>
 <body>
   <div class="card">
     ${bodyHtml}
   </div>
-  ${allowOpenLink ? "" : ""}
 </body>
 </html>`;
+}
+function sendHtml(res, status, title, bodyHtml) {
+  const html = renderHtmlPage(title, bodyHtml);
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store"
+  });
+  res.end(html);
 }
 async function readFormBody(req) {
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
     total += buf.length;
     if (total > 32 * 1024) {
-      throw new Error("Form payload too large.");
+      throw new Error("Request body too large.");
     }
     chunks.push(buf);
   }
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
 }
-async function requestXToken(consumerKey, consumerSecret, oauthCallback) {
-  const url = `${getOAuthBaseUrl()}/oauth/request_token`;
-  const auth = signOAuth1Header({
-    method: "POST",
-    url,
-    credentials: { consumerKey, consumerSecret },
-    extraOAuthParams: { oauth_callback: oauthCallback }
-  });
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: auth }
-  });
-  const body = await resp.text();
-  if (!resp.ok) {
-    return { ok: false, status: resp.status, body };
+function resolveCallbackConfig() {
+  const explicitRedirect = (process.env.X_OAUTH_REDIRECT_URI ?? "").trim();
+  if (explicitRedirect) {
+    const parsed = new URL(explicitRedirect);
+    const port2 = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+    return {
+      host: parsed.hostname || "127.0.0.1",
+      port: port2,
+      callbackPath: parsed.pathname || "/oauth/callback",
+      explicitRedirectUri: explicitRedirect
+    };
   }
-  const params = new URLSearchParams(body);
-  const requestToken = params.get("oauth_token") ?? "";
-  const requestTokenSecret = params.get("oauth_token_secret") ?? "";
-  if (!requestToken || !requestTokenSecret) {
-    return { ok: false, status: 500, body: `Malformed request_token response: ${body}` };
-  }
-  return { ok: true, requestToken, requestTokenSecret };
-}
-async function exchangeXAccessToken(options) {
-  const url = `${getOAuthBaseUrl()}/oauth/access_token`;
-  const auth = signOAuth1Header({
-    method: "POST",
-    url,
-    credentials: {
-      consumerKey: options.consumerKey,
-      consumerSecret: options.consumerSecret,
-      tokenKey: options.requestToken,
-      tokenSecret: options.requestTokenSecret
-    },
-    extraOAuthParams: { oauth_verifier: options.verifier }
-  });
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: auth }
-  });
-  const body = await resp.text();
-  if (!resp.ok) {
-    throw new Error(`Failed to exchange X OAuth access token (HTTP ${resp.status}): ${body}`);
-  }
-  const params = new URLSearchParams(body);
-  const accessToken = params.get("oauth_token") ?? "";
-  const accessSecret = params.get("oauth_token_secret") ?? "";
-  if (!accessToken || !accessSecret) {
-    throw new Error(`Malformed X OAuth access_token response: ${body}`);
-  }
-  return { accessToken, accessSecret };
-}
-async function listenWithRandomFallback(server, host, preferredPort) {
-  if (preferredPort > 0) {
-    try {
-      await new Promise((resolveListen, rejectListen) => {
-        const onErr = (err) => {
-          server.off("listening", onListening);
-          rejectListen(err);
-        };
-        const onListening = () => {
-          server.off("error", onErr);
-          resolveListen();
-        };
-        server.once("error", onErr);
-        server.once("listening", onListening);
-        server.listen(preferredPort, host);
-      });
-      const addr2 = server.address();
-      return { actualPort: addr2.port, usedFallbackPort: false };
-    } catch (err) {
-      const code = err?.code;
-      if (code !== "EADDRINUSE" && code !== "EACCES") {
-        throw err;
-      }
-      process.stderr.write(
-        `[@wezzard/mcp-x-articles] Port ${preferredPort} is in use; falling back to an OS-assigned random port with OAuth 1.0a PIN mode.
-`
-      );
-    }
-  }
-  await new Promise((resolveListen, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(0, host, () => {
-      server.off("error", rejectListen);
-      resolveListen();
-    });
-  });
-  const addr = server.address();
-  return { actualPort: addr.port, usedFallbackPort: true };
-}
-async function runInteractiveSetupAndOAuth1Flow(options) {
   const host = (process.env.X_OAUTH_CALLBACK_HOST ?? "127.0.0.1").trim() || "127.0.0.1";
   const rawPort = (process.env.X_OAUTH_CALLBACK_PORT ?? "8976").trim();
-  const preferredPort = rawPort === "0" ? 0 : Number(rawPort) || 8976;
-  const callbackPath = (process.env.X_OAUTH_CALLBACK_PATH ?? "/oauth/callback").trim() || "/oauth/callback";
-  const timeoutSec = Number(process.env.X_OAUTH_CALLBACK_TIMEOUT || "300") || 300;
-  const csrfSecret = randomBytes(16).toString("hex");
-  let creds = options.existingCredentials;
-  let credSource = options.existingCredentialSource;
+  const port = rawPort === "0" ? 0 : Number(rawPort || 8976);
+  const rawPath = (process.env.X_OAUTH_CALLBACK_PATH ?? "/oauth/callback").trim();
+  const callbackPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  return { host, port, callbackPath };
+}
+async function runInteractiveSetupAndOAuth2Flow(options) {
   const hostUi = detectHostConfigUi();
-  if (!creds && hostUi.hasNativeConfigUi) {
+  if (!options.existingCredentials && hostUi.hasNativeConfigUi) {
     throw new Error(
-      `Missing X OAuth Consumer Key and Secret. The localhost web setup form is only used when the host agent has no native configuration UI. ${hostUi.setupInstruction}`
+      `Missing X OAuth 2.0 Client ID. Because you are running inside ${hostUi.hostName}, configure X_OAUTH2_CLIENT_ID (and optional X_OAUTH2_CLIENT_SECRET / X_OAUTH2_REFRESH_TOKEN) in the native plugin settings UI (${hostUi.configUiUrl ?? hostUi.hostName}) rather than the localhost setup page.`
     );
   }
-  let activeReqToken = "";
-  let activeReqSecret = "";
-  let useOobMode = false;
-  let actualPort = preferredPort;
-  const sendHtml = (res, status, html) => {
-    res.statusCode = status;
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader(
-      "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
-    );
-    res.end(html);
-  };
-  let resolveDone;
-  let rejectDone;
+  const { host, port, callbackPath, explicitRedirectUri } = resolveCallbackConfig();
+  const timeoutSec = Math.max(30, Number(process.env.X_OAUTH_CALLBACK_TIMEOUT ?? 300) || 300);
+  let credentials = options.existingCredentials;
+  let credentialSource = options.existingCredentialSource;
+  const csrfToken = randomBytes(16).toString("hex");
+  const pkce = generatePkcePair();
+  const oauthState = randomBytes(24).toString("hex");
+  let boundPort = port;
+  let activeRedirectUri = explicitRedirectUri ?? `http://${host}:${port}${callbackPath}`;
+  let finishResolve;
+  let finishReject;
   const donePromise = new Promise((res, rej) => {
-    resolveDone = res;
-    rejectDone = rej;
+    finishResolve = res;
+    finishReject = rej;
   });
-  const initiateOAuthStep = async (currentCreds) => {
-    if (!useOobMode) {
-      const cbUrl = `http://${host}:${actualPort}${callbackPath}`;
-      const attempt = await requestXToken(
-        currentCreds.consumerKey,
-        currentCreds.consumerSecret,
-        cbUrl
+  const handleRequest = async (req, res) => {
+    const reqUrl = new URL(req.url ?? "/", `http://${host}:${boundPort}`);
+    const path = reqUrl.pathname;
+    if (req.method === "GET" && path === "/setup") {
+      if (reqUrl.searchParams.get("s") !== csrfToken) {
+        sendHtml(res, 403, "Session Expired", "<h1>Session expired</h1><p>Restart login.</p>");
+        return;
+      }
+      const errMsg = reqUrl.searchParams.get("error") ?? "";
+      const errBlock = errMsg ? `<div class="err">${escapeHtml(errMsg)}</div>` : "";
+      sendHtml(
+        res,
+        200,
+        "Connect @wezzard/mcp-x-articles (OAuth 2.0)",
+        `
+          <h1>Connect @wezzard/mcp-x-articles</h1>
+          <p class="sub">
+            Enter your <strong>OAuth 2.0 Keys</strong> from
+            <code>https://console.x.com</code> &rarr; Keys &amp; Tokens.
+            Credentials are stored locally in your OS Keychain.
+          </p>
+          ${errBlock}
+          <form method="POST" action="/setup">
+            <input type="hidden" name="s" value="${escapeHtml(csrfToken)}" />
+            <label for="client_id">X OAuth 2.0 Client ID</label>
+            <input id="client_id" name="client_id" type="text" required autocomplete="off"
+              value="${escapeHtml(credentials?.clientId ?? "")}"
+              placeholder="Paste OAuth 2.0 Client ID" />
+            <label for="client_secret">X OAuth 2.0 Client Secret (Optional for public clients)</label>
+            <input id="client_secret" name="client_secret" type="password" autocomplete="off"
+              placeholder="Paste Client Secret (or leave blank if public)" />
+            <label for="refresh_token">X OAuth 2.0 Refresh Token (Optional \u2014 skip browser callback)</label>
+            <input id="refresh_token" name="refresh_token" type="password" autocomplete="off"
+              placeholder="Paste from Console 'Generate', or leave blank for PKCE login" />
+            <button type="submit">Save to Keychain &amp; Authorize on X &rarr;</button>
+          </form>
+          <p class="hint">
+            For browser PKCE login, register callback URI:
+            <code>${escapeHtml(activeRedirectUri)}</code>
+          </p>
+        `
       );
-      if (attempt.ok) {
-        activeReqToken = attempt.requestToken;
-        activeReqSecret = attempt.requestTokenSecret;
-        return `${getOAuthBaseUrl()}/oauth/authorize?oauth_token=${encodeURIComponent(activeReqToken)}`;
-      }
-      if (attempt.body.toLowerCase().includes("callback") || attempt.status === 401 || attempt.status === 403 || attempt.status === 400) {
-        const oobAttempt = await requestXToken(
-          currentCreds.consumerKey,
-          currentCreds.consumerSecret,
-          "oob"
-        );
-        if (oobAttempt.ok) {
-          useOobMode = true;
-          activeReqToken = oobAttempt.requestToken;
-          activeReqSecret = oobAttempt.requestTokenSecret;
-          return `http://${host}:${actualPort}/pin?s=${csrfSecret}`;
-        }
-      }
-      throw new Error(`X OAuth request_token failed (HTTP ${attempt.status}): ${attempt.body}`);
+      return;
     }
-    const oobRes = await requestXToken(
-      currentCreds.consumerKey,
-      currentCreds.consumerSecret,
-      "oob"
-    );
-    if (!oobRes.ok) {
-      throw new Error(`X OAuth request_token (oob) failed (HTTP ${oobRes.status}): ${oobRes.body}`);
-    }
-    activeReqToken = oobRes.requestToken;
-    activeReqSecret = oobRes.requestTokenSecret;
-    return `http://${host}:${actualPort}/pin?s=${csrfSecret}`;
-  };
-  const renderSetupForm = (errorMsg) => renderHtmlPage(
-    "Setup @wezzard/mcp-x-articles",
-    [
-      "<h1>Connect @wezzard/mcp-x-articles</h1>",
-      "<p>Enter your X Developer App keys from <code>https://console.x.com</code>. They are saved directly into your local OS Keychain and never sent to any AI model.</p>",
-      errorMsg ? `<div class="err">${escapeHtml(errorMsg)}</div>` : "",
-      '<form method="POST" action="/setup">',
-      `<input type="hidden" name="s" value="${csrfSecret}" />`,
-      '<label for="ck">X API Key (Consumer Key)</label>',
-      '<input id="ck" name="consumer_key" type="text" autocomplete="off" required />',
-      '<label for="cs">X API Key Secret (Consumer Secret)</label>',
-      '<input id="cs" name="consumer_secret" type="password" autocomplete="off" required />',
-      '<button type="submit">Save to Keychain &amp; Authorize on X &rarr;</button>',
-      "</form>"
-    ].join("\n")
-  );
-  const renderPinForm = (authorizeUrl, errorMsg) => renderHtmlPage(
-    "Authorize @wezzard/mcp-x-articles",
-    [
-      "<h1>Enter Your X Authorization PIN</h1>",
-      "<p>1. Open X in a new tab and click <strong>Authorize app</strong>.<br/>2. Copy the 7-digit PIN displayed by X and paste it below.</p>",
-      `<p><a class="btn" href="${escapeHtml(authorizeUrl)}" target="_blank" rel="noopener noreferrer">1. Open X Authorization Page &nearr;</a></p>`,
-      errorMsg ? `<div class="err">${escapeHtml(errorMsg)}</div>` : "",
-      '<form method="POST" action="/pin">',
-      `<input type="hidden" name="s" value="${csrfSecret}" />`,
-      '<label for="pin">2. X OAuth PIN Code</label>',
-      '<input id="pin" name="verifier" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="1234567" required />',
-      '<button type="submit">Complete Authentication</button>',
-      "</form>"
-    ].join("\n"),
-    true
-  );
-  const server = createServer(async (req, res) => {
-    try {
-      const reqUrl = new URL(req.url ?? "/", `http://${host}:${actualPort}`);
-      if (req.method === "GET" && reqUrl.pathname === "/setup") {
-        if (reqUrl.searchParams.get("s") !== csrfSecret) {
-          sendHtml(res, 403, renderHtmlPage("Forbidden", "<h1>Invalid setup session token.</h1>"));
-          return;
-        }
-        sendHtml(res, 200, renderSetupForm());
+    if (req.method === "POST" && path === "/setup") {
+      const form = await readFormBody(req);
+      if (form.get("s") !== csrfToken) {
+        sendHtml(res, 403, "Session Expired", "<h1>Session expired</h1><p>Restart login.</p>");
         return;
       }
-      if (req.method === "POST" && reqUrl.pathname === "/setup") {
-        const form = await readFormBody(req);
-        if (form.get("s") !== csrfSecret) {
-          sendHtml(res, 403, renderHtmlPage("Forbidden", "<h1>Invalid setup session token.</h1>"));
-          return;
-        }
-        const ck = (form.get("consumer_key") ?? "").trim();
-        const cs = (form.get("consumer_secret") ?? "").trim();
-        if (!ck || !cs) {
-          sendHtml(res, 400, renderSetupForm("Both API Key and API Key Secret are required."));
-          return;
-        }
-        const candidate = { consumerKey: ck, consumerSecret: cs };
+      const clientId = (form.get("client_id") ?? "").trim();
+      const clientSecret = (form.get("client_secret") ?? "").trim() || void 0;
+      const refreshToken = (form.get("refresh_token") ?? "").trim();
+      if (!clientId) {
+        res.writeHead(302, {
+          Location: `/setup?s=${csrfToken}&error=${encodeURIComponent("Client ID is required.")}`
+        });
+        res.end();
+        return;
+      }
+      const nextCreds = {
+        clientId,
+        ...clientSecret ? { clientSecret } : {}
+      };
+      credentialSource = saveOAuth2ClientCredentials(nextCreds);
+      credentials = nextCreds;
+      if (refreshToken) {
         try {
-          const nextUrl = await initiateOAuthStep(candidate);
-          credSource = saveConsumerCredentials(candidate);
-          creds = candidate;
-          res.statusCode = 302;
-          res.setHeader("Location", nextUrl);
-          res.end();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          sendHtml(res, 400, renderSetupForm(msg));
-        }
-        return;
-      }
-      if (req.method === "GET" && reqUrl.pathname === "/pin") {
-        if (reqUrl.searchParams.get("s") !== csrfSecret || !activeReqToken) {
-          sendHtml(res, 403, renderHtmlPage("Forbidden", "<h1>Invalid PIN session.</h1>"));
-          return;
-        }
-        const authUrl = `${getOAuthBaseUrl()}/oauth/authorize?oauth_token=${encodeURIComponent(activeReqToken)}`;
-        sendHtml(res, 200, renderPinForm(authUrl));
-        return;
-      }
-      if (req.method === "POST" && reqUrl.pathname === "/pin") {
-        const form = await readFormBody(req);
-        if (form.get("s") !== csrfSecret || !creds || !activeReqToken) {
-          sendHtml(res, 403, renderHtmlPage("Forbidden", "<h1>Invalid PIN session.</h1>"));
-          return;
-        }
-        const verifier = (form.get("verifier") ?? "").trim();
-        if (!verifier) {
-          const authUrl = `${getOAuthBaseUrl()}/oauth/authorize?oauth_token=${encodeURIComponent(activeReqToken)}`;
-          sendHtml(res, 400, renderPinForm(authUrl, "Please enter the PIN code from X."));
-          return;
-        }
-        try {
-          const exchanged = await exchangeXAccessToken({
-            consumerKey: creds.consumerKey,
-            consumerSecret: creds.consumerSecret,
-            requestToken: activeReqToken,
-            requestTokenSecret: activeReqSecret,
-            verifier
+          const tokenResp = await refreshOAuth2Token({
+            credentials: nextCreds,
+            refreshToken
+          });
+          const nextRefresh = tokenResp.refreshToken ?? refreshToken;
+          const seedHash = sha256Hex(refreshToken);
+          const tokenSource = saveOAuth2UserTokens(nextCreds.clientId, {
+            accessToken: tokenResp.accessToken,
+            refreshToken: nextRefresh,
+            expiresAt: tokenResp.expiresAt,
+            scope: tokenResp.scope,
+            seedRefreshTokenHash: seedHash
           });
           sendHtml(
             res,
             200,
-            renderHtmlPage(
-              "OAuth Complete",
-              "<h1>Authentication Complete</h1><p>Your X credentials and token are saved in your local Keychain. You may close this tab and return to your agent.</p>"
-            )
+            "X Connected",
+            "<h1>Authorized!</h1><p>Your OAuth 2.0 tokens have been refreshed and saved. You can close this tab and return to your agent.</p>"
           );
-          clearTimeout(timer);
-          server.close();
-          resolveDone({
-            credentials: creds,
-            credentialSource: credSource,
-            accessToken: exchanged.accessToken,
-            accessSecret: exchanged.accessSecret,
-            usedOobPinFallback: true,
-            boundPort: actualPort,
-            entryUrl
+          finishResolve({
+            credentials: nextCreds,
+            credentialSource,
+            tokenSource,
+            accessToken: tokenResp.accessToken,
+            refreshToken: nextRefresh,
+            expiresAt: tokenResp.expiresAt,
+            scope: tokenResp.scope,
+            redirectUri: activeRedirectUri,
+            seedRefreshTokenHash: seedHash
           });
         } catch (err) {
-          const authUrl = `${getOAuthBaseUrl()}/oauth/authorize?oauth_token=${encodeURIComponent(activeReqToken)}`;
           const msg = err instanceof Error ? err.message : String(err);
-          sendHtml(res, 400, renderPinForm(authUrl, msg));
+          res.writeHead(302, {
+            Location: `/setup?s=${csrfToken}&error=${encodeURIComponent(msg)}`
+          });
+          res.end();
         }
         return;
       }
-      if (req.method === "GET" && reqUrl.pathname === callbackPath) {
-        const cbToken = reqUrl.searchParams.get("oauth_token") ?? "";
-        const cbVerifier = reqUrl.searchParams.get("oauth_verifier") ?? "";
-        if (!creds || !cbToken || !cbVerifier || cbToken !== activeReqToken) {
-          sendHtml(
-            res,
-            400,
-            renderHtmlPage("OAuth Error", "<h1>OAuth callback parameters were invalid or mismatched.</h1>")
-          );
-          return;
-        }
-        const exchanged = await exchangeXAccessToken({
-          consumerKey: creds.consumerKey,
-          consumerSecret: creds.consumerSecret,
-          requestToken: activeReqToken,
-          requestTokenSecret: activeReqSecret,
-          verifier: cbVerifier
+      const authUrl = buildOAuth2AuthorizeUrl({
+        clientId: nextCreds.clientId,
+        redirectUri: activeRedirectUri,
+        state: oauthState,
+        codeChallenge: pkce.codeChallenge
+      });
+      res.writeHead(302, { Location: authUrl });
+      res.end();
+      return;
+    }
+    if (req.method === "GET" && path === callbackPath) {
+      const oauthError = reqUrl.searchParams.get("error");
+      const oauthErrorDesc = reqUrl.searchParams.get("error_description");
+      if (oauthError) {
+        const msg = `X authorization declined (${oauthError}): ${oauthErrorDesc ?? "no details"}`;
+        sendHtml(res, 400, "X Authorization Declined", `<h1>Authorization Declined</h1><p>${escapeHtml(msg)}</p>`);
+        finishReject(new Error(msg));
+        return;
+      }
+      const code = (reqUrl.searchParams.get("code") ?? "").trim();
+      const returnedState = (reqUrl.searchParams.get("state") ?? "").trim();
+      if (!code || returnedState !== oauthState || !credentials) {
+        const msg = "Invalid OAuth 2.0 callback state or missing authorization code.";
+        sendHtml(res, 400, "Invalid OAuth 2.0 Callback", `<h1>Invalid Callback</h1><p>${escapeHtml(msg)}</p>`);
+        finishReject(new Error(msg));
+        return;
+      }
+      try {
+        const tokenResp = await exchangeAuthorizationCode({
+          credentials,
+          code,
+          redirectUri: activeRedirectUri,
+          codeVerifier: pkce.codeVerifier
+        });
+        const tokenSource = saveOAuth2UserTokens(credentials.clientId, {
+          accessToken: tokenResp.accessToken,
+          refreshToken: tokenResp.refreshToken,
+          expiresAt: tokenResp.expiresAt,
+          scope: tokenResp.scope
         });
         sendHtml(
           res,
           200,
-          renderHtmlPage(
-            "OAuth Complete",
-            "<h1>Authentication Complete</h1><p>Authorization succeeded. You may close this tab and return to your agent.</p>"
-          )
+          "X Connected",
+          "<h1>Authorized!</h1><p>Long-term OAuth 2.0 authorization completed. You can close this tab and return to your agent.</p>"
         );
-        clearTimeout(timer);
-        server.close();
-        resolveDone({
-          credentials: creds,
-          credentialSource: credSource,
-          accessToken: exchanged.accessToken,
-          accessSecret: exchanged.accessSecret,
-          usedOobPinFallback: false,
-          boundPort: actualPort,
-          entryUrl
+        finishResolve({
+          credentials,
+          credentialSource,
+          tokenSource,
+          accessToken: tokenResp.accessToken,
+          refreshToken: tokenResp.refreshToken,
+          expiresAt: tokenResp.expiresAt,
+          scope: tokenResp.scope,
+          redirectUri: activeRedirectUri
         });
-        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        sendHtml(res, 500, "Token Exchange Failed", `<h1>Token Exchange Failed</h1><p>${escapeHtml(msg)}</p>`);
+        finishReject(err instanceof Error ? err : new Error(msg));
       }
-      res.statusCode = 404;
-      res.end("Not found.");
-    } catch (err) {
-      clearTimeout(timer);
-      server.close();
-      rejectDone(err instanceof Error ? err : new Error(String(err)));
+      return;
     }
-  });
-  const bindRes = await listenWithRandomFallback(server, host, preferredPort);
-  actualPort = bindRes.actualPort;
-  useOobMode = bindRes.usedFallbackPort;
-  const timer = setTimeout(() => {
-    server.close();
-    rejectDone(new Error("Timed out waiting for X OAuth setup/authorization in browser."));
-  }, timeoutSec * 1e3);
-  let entryUrl;
+    res.writeHead(404);
+    res.end("Not found");
+  };
+  let server = null;
   try {
-    if (!creds) {
-      entryUrl = `http://${host}:${actualPort}/setup?s=${csrfSecret}`;
-    } else {
-      entryUrl = await initiateOAuthStep(creds);
-    }
+    server = await new Promise((resolveServer, rejectServer) => {
+      const s = createServer((req, res) => {
+        handleRequest(req, res).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          sendHtml(res, 500, "Error", `<h1>Unexpected Error</h1><pre>${escapeHtml(msg)}</pre>`);
+        });
+      });
+      s.once("error", rejectServer);
+      s.listen(port, host, () => {
+        s.removeListener("error", rejectServer);
+        resolveServer(s);
+      });
+    });
   } catch (err) {
-    clearTimeout(timer);
-    server.close();
+    const code = err?.code;
+    if (code === "EADDRINUSE") {
+      throw new Error(
+        `OAuth 2.0 callback port ${host}:${port} is already in use (EADDRINUSE). Free port ${port}, set X_OAUTH_CALLBACK_PORT / X_OAUTH_REDIRECT_URI to an open port registered in https://console.x.com, or generate a Refresh Token directly in https://console.x.com and configure X_OAUTH2_REFRESH_TOKEN.`
+      );
+    }
     throw err;
   }
-  process.stderr.write(`[@wezzard/mcp-x-articles] Opening browser for X authentication: ${entryUrl}
-`);
-  options.onServerReady?.(entryUrl);
-  openBrowserUrl(entryUrl);
-  return donePromise;
+  boundPort = server.address().port;
+  activeRedirectUri = explicitRedirectUri ?? `http://${host}:${boundPort}${callbackPath}`;
+  const timer = setTimeout(() => {
+    finishReject(new Error(`OAuth 2.0 login timed out after ${timeoutSec}s.`));
+  }, timeoutSec * 1e3);
+  try {
+    const entryUrl = credentials ? buildOAuth2AuthorizeUrl({
+      clientId: credentials.clientId,
+      redirectUri: activeRedirectUri,
+      state: oauthState,
+      codeChallenge: pkce.codeChallenge
+    }) : `http://${host}:${boundPort}/setup?s=${csrfToken}`;
+    options.onServerReady?.(entryUrl);
+    openBrowserUrl(entryUrl);
+    return await donePromise;
+  } finally {
+    clearTimeout(timer);
+    server?.close();
+  }
 }
 
 // src/server.ts
-import { existsSync as existsSync3, readFileSync as readFileSync6, statSync } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync6, statSync as statSync2 } from "node:fs";
 import { dirname as dirname3, resolve as resolve4 } from "node:path";
 
 // node_modules/zod/v4/core/util.js
@@ -19298,7 +19393,7 @@ function convertMarkdownFile(markdownPath, options = {}) {
 }
 
 // src/preflight-token.ts
-import { createHash as createHash2, timingSafeEqual } from "node:crypto";
+import { createHash as createHash3, timingSafeEqual } from "node:crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync4 } from "node:fs";
 import { dirname as dirname2, resolve as resolve2 } from "node:path";
 
@@ -19391,7 +19486,7 @@ function scanSensitiveFile(markdownPath, alsoPaths = []) {
 
 // src/preflight-token.ts
 function sha256Bytes(buf) {
-  return createHash2("sha256").update(buf).digest("hex");
+  return createHash3("sha256").update(buf).digest("hex");
 }
 function resolveCoverImagePath(markdownPath, explicitCoverPath, omitCover) {
   if (omitCover) return void 0;
@@ -19461,6 +19556,7 @@ function verifyPreflightToken(providedToken, input) {
 import { readFileSync as readFileSync5 } from "node:fs";
 import { extname, resolve as resolve3 } from "node:path";
 var CHUNK_SIZE_BYTES = 25e5;
+var REFRESH_BUFFER_SECONDS = 300;
 function guessMediaType(pathOrUrl) {
   const clean = pathOrUrl.split("?")[0].split("#")[0];
   const ext = extname(clean).toLowerCase();
@@ -19479,18 +19575,66 @@ function guessMediaType(pathOrUrl) {
   };
   return mapping[ext] ?? "image/png";
 }
-function getApiBaseUrl() {
-  return (process.env.X_API_BASE_URL ?? "https://api.x.com").trim().replace(/\/+$/, "");
+function guessMediaCategory(mediaType) {
+  const normalized = mediaType.trim().toLowerCase();
+  if (normalized === "image/gif") return "tweet_gif";
+  if (normalized.startsWith("video/")) return "tweet_video";
+  return "tweet_image";
 }
-async function signedJsonRequest(options) {
-  const url = `${getApiBaseUrl()}${options.pathWithQuery}`;
-  const authHeader = signOAuth1Header({
-    method: options.method,
-    url,
-    credentials: options.signingCreds
+function activeEnvRefreshSeedHash() {
+  const raw = (process.env.X_OAUTH2_REFRESH_TOKEN ?? "").trim();
+  if (!raw || raw.startsWith("${")) return void 0;
+  return sha256Hex(raw);
+}
+async function refreshSessionLocked(credentials, staleTokens) {
+  return withOAuth2RefreshLock(async () => {
+    const latest = loadOAuth2UserTokens(credentials.clientId);
+    const now = Math.floor(Date.now() / 1e3);
+    if (latest.tokens && latest.tokens.accessToken && latest.tokens.accessToken !== staleTokens.accessToken && latest.tokens.expiresAt > now + REFRESH_BUFFER_SECONDS) {
+      return {
+        tokens: latest.tokens,
+        tokenSource: latest.source,
+        refreshed: false
+      };
+    }
+    const refreshTokenToUse = latest.tokens?.refreshToken ?? staleTokens.refreshToken;
+    if (!refreshTokenToUse) {
+      throw new OAuth2TokenError("No OAuth 2.0 refresh token is available to refresh session.", 401);
+    }
+    const refreshed = await refreshOAuth2Token({
+      credentials,
+      refreshToken: refreshTokenToUse
+    });
+    const nextRefreshToken = refreshed.refreshToken ?? refreshTokenToUse;
+    const nextScope = refreshed.scope ?? latest.tokens?.scope ?? staleTokens.scope;
+    const seedRefreshTokenHash = latest.tokens?.seedRefreshTokenHash ?? staleTokens.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+    const savedAt = Math.floor(Date.now() / 1e3);
+    const savedSource = saveOAuth2UserTokens(credentials.clientId, {
+      accessToken: refreshed.accessToken,
+      refreshToken: nextRefreshToken,
+      expiresAt: refreshed.expiresAt,
+      scope: nextScope,
+      savedAt,
+      seedRefreshTokenHash
+    });
+    return {
+      tokens: {
+        accessToken: refreshed.accessToken,
+        refreshToken: nextRefreshToken,
+        expiresAt: refreshed.expiresAt,
+        ...nextScope ? { scope: nextScope } : {},
+        savedAt,
+        ...seedRefreshTokenHash ? { seedRefreshTokenHash } : {}
+      },
+      tokenSource: savedSource,
+      refreshed: true
+    };
   });
+}
+async function rawBearerJsonRequest(options) {
+  const url = `${getApiBaseUrl()}${options.pathWithQuery}`;
   const headers = {
-    Authorization: authHeader,
+    Authorization: `Bearer ${options.accessToken}`,
     "X-B3-Flags": (process.env.X_B3_FLAGS ?? "1").trim() || "1"
   };
   let bodyStr;
@@ -19517,93 +19661,222 @@ async function signedJsonRequest(options) {
       `X API returned 402 Payment Required (${options.pathWithQuery}): your X Developer App credit balance is depleted. Top up credits at https://console.x.com. Raw response: ${text}`
     );
   }
-  return { status: resp.status, data: parsed };
+  return { status: resp.status, data: parsed, rawText: text };
+}
+async function authorizedJsonRequest(options) {
+  const first = await rawBearerJsonRequest({
+    method: options.method,
+    pathWithQuery: options.pathWithQuery,
+    accessToken: options.session.accessToken,
+    jsonBody: options.jsonBody
+  });
+  if (first.status !== 401 || !options.session.refreshToken) {
+    return first;
+  }
+  const rotated = await refreshSessionLocked(options.session.credentials, {
+    accessToken: options.session.accessToken,
+    refreshToken: options.session.refreshToken,
+    expiresAt: options.session.expiresAt,
+    scope: options.session.scope,
+    savedAt: Math.floor(Date.now() / 1e3),
+    seedRefreshTokenHash: options.session.seedRefreshTokenHash
+  });
+  options.session.accessToken = rotated.tokens.accessToken;
+  options.session.refreshToken = rotated.tokens.refreshToken;
+  options.session.expiresAt = rotated.tokens.expiresAt;
+  options.session.scope = rotated.tokens.scope;
+  options.session.tokenSource = rotated.tokenSource;
+  options.session.seedRefreshTokenHash = rotated.tokens.seedRefreshTokenHash;
+  options.session.refreshed = options.session.refreshed || rotated.refreshed;
+  return rawBearerJsonRequest({
+    method: options.method,
+    pathWithQuery: options.pathWithQuery,
+    accessToken: options.session.accessToken,
+    jsonBody: options.jsonBody
+  });
+}
+function buildMissingTokenHint(credentialSource, reason) {
+  const hostUi = detectHostConfigUi();
+  const prefix = reason ? `${reason} ` : "";
+  if (hostUi.hasNativeConfigUi) {
+    const uiRef = hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI";
+    return `${prefix}Client ID found (${credentialSource}), but no valid OAuth 2.0 user token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${uiRef}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser (requires callback URI \`http://127.0.0.1:8976/oauth/callback\` in console.x.com).`;
+  }
+  return `${prefix}No cached OAuth 2.0 user token found. Call \`x_article_auth_status({ login: true })\` or run \`npx @wezzard/mcp-x-articles auth\` to authorize in your browser.`;
 }
 async function ensureAuthenticatedSession(options) {
-  let { credentials, source: credentialSource } = loadConsumerCredentials();
-  let tokens = credentials ? loadUserOAuthTokens(credentials.consumerKey).tokens : null;
-  let tokenSource = credentials ? loadUserOAuthTokens(credentials.consumerKey).source : "none";
-  if (credentials && tokens && options.verifyProbe) {
-    const signingCreds2 = {
-      consumerKey: credentials.consumerKey,
-      consumerSecret: credentials.consumerSecret,
-      tokenKey: tokens.accessToken,
-      tokenSecret: tokens.accessSecret
-    };
-    const probe = await signedJsonRequest({
-      method: "GET",
-      pathWithQuery: "/2/users/me",
-      signingCreds: signingCreds2
-    });
-    if (probe.status !== 401) {
-      return {
-        signingCreds: signingCreds2,
-        credentialSource,
-        tokenSource,
-        user: probe.data?.data
-      };
+  const hostUi = detectHostConfigUi();
+  let { credentials, source: credentialSource } = loadOAuth2ClientCredentials();
+  let tokens = null;
+  let tokenSource = "none";
+  let refreshedFlag = false;
+  if (!credentials) {
+    if (hostUi.hasNativeConfigUi || !options.allowInteractiveLogin) {
+      throw new Error(`Missing X OAuth 2.0 Client ID. ${hostUi.setupInstruction}`);
     }
-    if (tokenSource !== "env") {
-      clearUserOAuthTokens(credentials.consumerKey);
-      tokens = null;
-    } else {
-      throw new Error("X_OAUTH_ACCESS_TOKEN in environment variables returned 401 Unauthorized.");
+    const interactive = await runInteractiveSetupAndOAuth2Flow({
+      existingCredentials: null,
+      existingCredentialSource: "none"
+    });
+    credentials = interactive.credentials;
+    credentialSource = interactive.credentialSource;
+    tokenSource = interactive.tokenSource;
+    tokens = {
+      accessToken: interactive.accessToken,
+      refreshToken: interactive.refreshToken,
+      expiresAt: interactive.expiresAt,
+      scope: interactive.scope,
+      savedAt: Math.floor(Date.now() / 1e3),
+      seedRefreshTokenHash: interactive.seedRefreshTokenHash
+    };
+  } else {
+    const loaded = loadOAuth2UserTokens(credentials.clientId);
+    tokens = loaded.tokens;
+    tokenSource = loaded.source;
+  }
+  if (tokens) {
+    const now = Math.floor(Date.now() / 1e3);
+    const needsProactiveRefresh = !tokens.accessToken || now >= tokens.expiresAt - REFRESH_BUFFER_SECONDS;
+    if (needsProactiveRefresh) {
+      if (tokens.refreshToken) {
+        try {
+          const rotated = await refreshSessionLocked(credentials, tokens);
+          tokens = rotated.tokens;
+          tokenSource = rotated.tokenSource;
+          refreshedFlag = rotated.refreshed;
+        } catch (err) {
+          const isInvalidGrant = err instanceof OAuth2TokenError && (err.oauthError === "invalid_grant" || err.status === 400 || err.status === 401);
+          if (!isInvalidGrant) {
+            throw err;
+          }
+          if (tokenSource !== "env") {
+            clearOAuth2UserTokens(credentials.clientId);
+          }
+          tokens = null;
+          if (!options.allowInteractiveLogin) {
+            throw new Error(buildMissingTokenHint(credentialSource, err.message));
+          }
+        }
+      } else if (!tokens.accessToken) {
+        if (tokenSource !== "env") {
+          clearOAuth2UserTokens(credentials.clientId);
+        }
+        tokens = null;
+      }
     }
   }
-  if (!credentials || !tokens) {
-    const hostUi = detectHostConfigUi();
-    if (!credentials && hostUi.hasNativeConfigUi) {
-      throw new Error(`Missing X OAuth Consumer Key and Secret. ${hostUi.setupInstruction}`);
-    }
+  if (!tokens) {
     if (!options.allowInteractiveLogin) {
-      if (!credentials) {
-        throw new Error(`Missing X OAuth Consumer Key and Secret. ${hostUi.setupInstruction}`);
-      }
-      throw new Error(
-        hostUi.hasNativeConfigUi ? `No user OAuth 1.0a token is configured yet. Either configure X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize in your browser.` : "No cached OAuth 1.0a user token found. Call `x_article_auth_status({ login: true })` or run `npx @wezzard/mcp-x-articles auth` to authorize in your browser."
-      );
+      throw new Error(buildMissingTokenHint(credentialSource));
     }
-    const interactive = await runInteractiveSetupAndOAuth1Flow({
+    const interactive = await runInteractiveSetupAndOAuth2Flow({
       existingCredentials: credentials,
       existingCredentialSource: credentialSource
     });
     credentials = interactive.credentials;
     credentialSource = interactive.credentialSource;
-    tokenSource = saveUserOAuthTokens(
-      credentials.consumerKey,
-      interactive.accessToken,
-      interactive.accessSecret
-    );
+    const seedHash = interactive.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+    if (seedHash && !interactive.seedRefreshTokenHash) {
+      tokenSource = saveOAuth2UserTokens(credentials.clientId, {
+        accessToken: interactive.accessToken,
+        refreshToken: interactive.refreshToken,
+        expiresAt: interactive.expiresAt,
+        scope: interactive.scope,
+        seedRefreshTokenHash: seedHash
+      });
+    } else {
+      tokenSource = interactive.tokenSource;
+    }
     tokens = {
       accessToken: interactive.accessToken,
-      accessSecret: interactive.accessSecret,
-      savedAt: Math.floor(Date.now() / 1e3)
+      refreshToken: interactive.refreshToken,
+      expiresAt: interactive.expiresAt,
+      scope: interactive.scope,
+      savedAt: Math.floor(Date.now() / 1e3),
+      ...seedHash ? { seedRefreshTokenHash: seedHash } : {}
     };
   }
-  const signingCreds = {
-    consumerKey: credentials.consumerKey,
-    consumerSecret: credentials.consumerSecret,
-    tokenKey: tokens.accessToken,
-    tokenSecret: tokens.accessSecret
-  };
-  let user;
-  if (options.verifyProbe) {
-    const probe = await signedJsonRequest({
-      method: "GET",
-      pathWithQuery: "/2/users/me",
-      signingCreds
-    });
-    if (probe.status >= 400) {
-      throw new Error(`X API user verification failed (HTTP ${probe.status}): ${JSON.stringify(probe.data)}`);
-    }
-    user = probe.data?.data;
-  }
-  return {
-    signingCreds,
+  const session = {
+    credentials,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: tokens.expiresAt,
+    scope: tokens.scope,
     credentialSource,
     tokenSource,
-    user
+    refreshed: refreshedFlag,
+    seedRefreshTokenHash: tokens.seedRefreshTokenHash
   };
+  if (options.verifyProbe) {
+    let probe;
+    try {
+      probe = await authorizedJsonRequest({
+        method: "GET",
+        pathWithQuery: "/2/users/me",
+        session
+      });
+    } catch (err) {
+      const isInvalidGrant = err instanceof OAuth2TokenError && (err.oauthError === "invalid_grant" || err.status === 400 || err.status === 401);
+      if (!isInvalidGrant || !options.allowInteractiveLogin) {
+        throw err;
+      }
+      clearOAuth2UserTokens(credentials.clientId);
+      const interactive = await runInteractiveSetupAndOAuth2Flow({
+        existingCredentials: credentials,
+        existingCredentialSource: credentialSource
+      });
+      const seedHash = interactive.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+      session.accessToken = interactive.accessToken;
+      session.refreshToken = interactive.refreshToken;
+      session.expiresAt = interactive.expiresAt;
+      session.scope = interactive.scope;
+      session.tokenSource = seedHash ? saveOAuth2UserTokens(credentials.clientId, {
+        accessToken: interactive.accessToken,
+        refreshToken: interactive.refreshToken,
+        expiresAt: interactive.expiresAt,
+        scope: interactive.scope,
+        seedRefreshTokenHash: seedHash
+      }) : interactive.tokenSource;
+      session.seedRefreshTokenHash = seedHash;
+      probe = await rawBearerJsonRequest({
+        method: "GET",
+        pathWithQuery: "/2/users/me",
+        accessToken: session.accessToken
+      });
+    }
+    if (probe.status === 401 && options.allowInteractiveLogin) {
+      clearOAuth2UserTokens(credentials.clientId);
+      const interactive = await runInteractiveSetupAndOAuth2Flow({
+        existingCredentials: credentials,
+        existingCredentialSource: credentialSource
+      });
+      const seedHash = interactive.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+      session.accessToken = interactive.accessToken;
+      session.refreshToken = interactive.refreshToken;
+      session.expiresAt = interactive.expiresAt;
+      session.scope = interactive.scope;
+      session.tokenSource = seedHash ? saveOAuth2UserTokens(credentials.clientId, {
+        accessToken: interactive.accessToken,
+        refreshToken: interactive.refreshToken,
+        expiresAt: interactive.expiresAt,
+        scope: interactive.scope,
+        seedRefreshTokenHash: seedHash
+      }) : interactive.tokenSource;
+      session.seedRefreshTokenHash = seedHash;
+      probe = await rawBearerJsonRequest({
+        method: "GET",
+        pathWithQuery: "/2/users/me",
+        accessToken: session.accessToken
+      });
+    }
+    if (probe.status >= 400) {
+      throw new Error(
+        `X API user verification failed (HTTP ${probe.status}): ${JSON.stringify(probe.data)}`
+      );
+    }
+    session.user = probe.data?.data;
+  }
+  return session;
 }
 async function loadImageBytes(pathOrUrl) {
   if (isRemoteUrl(pathOrUrl)) {
@@ -19627,11 +19900,11 @@ async function loadImageBytes(pathOrUrl) {
   };
 }
 async function uploadMediaBuffer(options) {
-  const mediaCategory = options.mediaCategory ?? "tweet_image";
-  const initResp = await signedJsonRequest({
+  const mediaCategory = options.mediaCategory ?? guessMediaCategory(options.mediaType);
+  const initResp = await authorizedJsonRequest({
     method: "POST",
     pathWithQuery: "/2/media/upload/initialize",
-    signingCreds: options.signingCreds,
+    session: options.session,
     jsonBody: {
       media_category: mediaCategory,
       media_type: options.mediaType,
@@ -19650,10 +19923,10 @@ async function uploadMediaBuffer(options) {
   let segmentIndex = 0;
   for (let offset = 0; offset < options.bytes.length; offset += CHUNK_SIZE_BYTES) {
     const chunk = options.bytes.subarray(offset, offset + CHUNK_SIZE_BYTES);
-    const appendResp = await signedJsonRequest({
+    const appendResp = await authorizedJsonRequest({
       method: "POST",
       pathWithQuery: `/2/media/upload/${encodeURIComponent(mediaId)}/append`,
-      signingCreds: options.signingCreds,
+      session: options.session,
       jsonBody: {
         media: chunk.toString("base64"),
         segment_index: segmentIndex
@@ -19666,10 +19939,10 @@ async function uploadMediaBuffer(options) {
     }
     segmentIndex += 1;
   }
-  const finResp = await signedJsonRequest({
+  const finResp = await authorizedJsonRequest({
     method: "POST",
     pathWithQuery: `/2/media/upload/${encodeURIComponent(mediaId)}/finalize`,
-    signingCreds: options.signingCreds
+    session: options.session
   });
   if (finResp.status >= 400) {
     throw new Error(
@@ -19680,10 +19953,10 @@ async function uploadMediaBuffer(options) {
   while (proc && (proc.state === "pending" || proc.state === "in_progress")) {
     const waitSeconds = Math.max(1, Number(proc.check_after_secs ?? 2));
     await new Promise((r) => setTimeout(r, waitSeconds * 1e3));
-    const statusResp = await signedJsonRequest({
+    const statusResp = await authorizedJsonRequest({
       method: "GET",
       pathWithQuery: `/2/media/upload?media_id=${encodeURIComponent(mediaId)}&command=STATUS`,
-      signingCreds: options.signingCreds
+      session: options.session
     });
     if (statusResp.status >= 400) {
       throw new Error(
@@ -19712,10 +19985,10 @@ async function createXArticleDraft(options) {
       media_id: options.coverMediaId
     };
   }
-  const resp = await signedJsonRequest({
+  const resp = await authorizedJsonRequest({
     method: "POST",
     pathWithQuery: "/2/articles/draft",
-    signingCreds: options.signingCreds,
+    session: options.session,
     jsonBody: payload
   });
   if (resp.status >= 400) {
@@ -19736,10 +20009,10 @@ async function publishXArticle(options) {
   if (!/^[0-9]{1,19}$/.test(cleanId)) {
     throw new Error(`Invalid article_id "${options.articleId}": expected a numeric X snowflake ID.`);
   }
-  const resp = await signedJsonRequest({
+  const resp = await authorizedJsonRequest({
     method: "POST",
     pathWithQuery: `/2/articles/${encodeURIComponent(cleanId)}/publish`,
-    signingCreds: options.signingCreds
+    session: options.session
   });
   if (resp.status >= 400) {
     throw new Error(`articlePublish failed (HTTP ${resp.status}): ${JSON.stringify(resp.data)}`);
@@ -19772,13 +20045,13 @@ var TOOLS = [
   {
     name: "x_article_auth_status",
     title: "Check or Setup X Articles Authentication",
-    description: "Check X OAuth 1.0a consumer credential resolution (Environment Variables -> macOS Keychain -> 0600 XDG config) and cached user token validity (`GET /2/users/me`). Set `login: true` to launch localhost browser OAuth 1.0a consent when no valid user token is cached.",
+    description: "Check X OAuth 2.0 client credential resolution (Environment Variables -> macOS Keychain -> 0600 XDG config), proactively refresh rotating offline.access tokens, and verify user token validity (`GET /2/users/me`). Set `login: true` to launch localhost OAuth 2.0 PKCE browser consent when no valid user token is available.",
     inputSchema: {
       type: "object",
       properties: {
         login: {
           type: "boolean",
-          description: "When true, launches the localhost OAuth 1.0a browser consent flow if no valid user token is cached."
+          description: "When true, launches the localhost OAuth 2.0 PKCE browser consent flow if no valid user token is cached."
         },
         verify: {
           type: "boolean",
@@ -19979,13 +20252,18 @@ function createMcpServer() {
         const login = Boolean(args.login);
         const verify = args.verify !== false;
         const hostUi = detectHostConfigUi();
-        const { credentials, source: credentialSource } = loadConsumerCredentials();
+        const { credentials, source: credentialSource } = loadOAuth2ClientCredentials();
         if (!credentials) {
           if (hostUi.hasNativeConfigUi || !login) {
             return jsonToolResult({
+              auth_mode: "oauth2",
               configured: false,
               credential_source: "none",
               token_cached: false,
+              has_refresh_token: false,
+              access_token_expires_at: null,
+              scopes: null,
+              refreshed: false,
               has_native_config_ui: hostUi.hasNativeConfigUi,
               native_config_ui_url: hostUi.configUiUrl,
               setup_hint: hostUi.setupInstruction
@@ -19993,16 +20271,21 @@ function createMcpServer() {
           }
         }
         if (credentials) {
-          const cached2 = loadUserOAuthTokens(credentials.consumerKey);
+          const cached2 = loadOAuth2UserTokens(credentials.clientId);
           if (!cached2.tokens && !login) {
             return jsonToolResult({
+              auth_mode: "oauth2",
               configured: true,
               credential_source: credentialSource,
               token_cached: false,
               token_source: "none",
+              has_refresh_token: false,
+              access_token_expires_at: null,
+              scopes: null,
+              refreshed: false,
               has_native_config_ui: hostUi.hasNativeConfigUi,
               native_config_ui_url: hostUi.configUiUrl,
-              setup_hint: hostUi.hasNativeConfigUi ? `Consumer credentials found (${credentialSource}), but no user OAuth 1.0a Access Token is configured yet. Either configure X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser.` : "Consumer credentials found, but no user OAuth 1.0a token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser."
+              setup_hint: hostUi.hasNativeConfigUi ? `OAuth 2.0 Client ID found (${credentialSource}), but no user Refresh Token or Access Token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser.` : "OAuth 2.0 Client ID found, but no user OAuth 2.0 token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser."
             });
           }
         }
@@ -20011,10 +20294,15 @@ function createMcpServer() {
           verifyProbe: verify
         });
         return jsonToolResult({
+          auth_mode: "oauth2",
           configured: true,
           credential_source: session.credentialSource,
           token_cached: true,
           token_source: session.tokenSource,
+          has_refresh_token: Boolean(session.refreshToken),
+          access_token_expires_at: session.expiresAt ? new Date(session.expiresAt * 1e3).toISOString() : null,
+          scopes: session.scope ?? null,
+          refreshed: Boolean(session.refreshed),
           has_native_config_ui: hostUi.hasNativeConfigUi,
           native_config_ui_url: hostUi.configUiUrl,
           verified: verify,
@@ -20076,7 +20364,7 @@ function createMcpServer() {
         if (includePreviews) {
           for (const img of reviewImagePaths) {
             if (img.is_remote || !existsSync3(img.resolved_path)) continue;
-            const st2 = statSync(img.resolved_path);
+            const st2 = statSync2(img.resolved_path);
             if (!st2.isFile() || st2.size > MAX_INLINE_PREVIEW_BYTES) continue;
             const mime = guessMediaType(img.resolved_path);
             if (!PREVIEWABLE_MIMES.has(mime)) continue;
@@ -20141,8 +20429,8 @@ function createMcpServer() {
           const up = await uploadMediaBuffer({
             bytes: loaded.bytes,
             mediaType: loaded.mediaType,
-            mediaCategory: "tweet_image",
-            signingCreds: session.signingCreds,
+            mediaCategory: guessMediaCategory(loaded.mediaType),
+            session,
             label: src
           });
           mediaMap[src] = {
@@ -20162,7 +20450,7 @@ function createMcpServer() {
             bytes: loadedCover.bytes,
             mediaType: loadedCover.mediaType,
             mediaCategory: "tweet_image",
-            signingCreds: session.signingCreds,
+            session,
             label: "cover_image"
           });
           coverMediaId = upCover.media_id;
@@ -20176,7 +20464,7 @@ function createMcpServer() {
           contentState: finalConversion.content_state,
           coverMediaId,
           coverMediaCategory: "tweet_image",
-          signingCreds: session.signingCreds
+          session
         });
         return jsonToolResult({
           ok: true,
@@ -20200,7 +20488,7 @@ function createMcpServer() {
         });
         const published = await publishXArticle({
           articleId,
-          signingCreds: session.signingCreds,
+          session,
           usernameHint: session.user?.username
         });
         return jsonToolResult({
@@ -20236,8 +20524,8 @@ function printHelp() {
       "",
       "Usage:",
       "  mcp-x-articles            Start the MCP server over stdio (default)",
-      "  mcp-x-articles auth       Configure X OAuth 1.0a keys in macOS Keychain and authorize in browser",
-      "  mcp-x-articles status     Show current credential and OAuth token status",
+      "  mcp-x-articles auth       Configure X OAuth 2.0 keys in macOS Keychain and authorize in browser",
+      "  mcp-x-articles status     Show current OAuth 2.0 credential and token status",
       "  mcp-x-articles --version  Print package version",
       "  mcp-x-articles --help     Print this help message",
       ""
@@ -20245,57 +20533,80 @@ function printHelp() {
   );
 }
 async function runAuthCli(resetKeys) {
-  let { credentials, source } = loadConsumerCredentials();
+  let { credentials, source } = loadOAuth2ClientCredentials();
+  let cliRefreshToken = "";
   if (!credentials || resetKeys) {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
     try {
       process.stderr.write(
-        "Optional: register http://127.0.0.1:8976/oauth/callback in https://console.x.com for 1-click redirect (otherwise automatic PIN mode is used).\n\n"
+        "For browser PKCE login, register http://127.0.0.1:8976/oauth/callback in https://console.x.com.\nOr click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token below.\n\n"
       );
-      const consumerKey = (await rl.question("X OAuth Consumer Key (API Key): ")).trim();
-      const consumerSecret = (await rl.question("X OAuth Consumer Secret (API Key Secret): ")).trim();
-      if (!consumerKey || !consumerSecret) {
-        throw new Error("Consumer Key and Consumer Secret are both required.");
+      const clientId = (await rl.question("X OAuth 2.0 Client ID: ")).trim();
+      const clientSecret = (await rl.question("X OAuth 2.0 Client Secret (optional for public clients): ")).trim() || void 0;
+      cliRefreshToken = (await rl.question("X OAuth 2.0 Refresh Token (leave blank for browser PKCE login): ")).trim();
+      if (!clientId) {
+        throw new Error("X OAuth 2.0 Client ID is required.");
       }
-      source = saveConsumerCredentials({ consumerKey, consumerSecret });
-      credentials = { consumerKey, consumerSecret };
-      process.stderr.write(`Saved consumer credentials to ${source}.
+      source = saveOAuth2ClientCredentials({
+        clientId,
+        ...clientSecret ? { clientSecret } : {}
+      });
+      credentials = {
+        clientId,
+        ...clientSecret ? { clientSecret } : {}
+      };
+      process.stderr.write(`Saved OAuth 2.0 client credentials to ${source}.
 `);
     } finally {
       rl.close();
     }
   } else {
-    process.stderr.write(`Using existing consumer credentials from ${source}.
+    process.stderr.write(`Using existing OAuth 2.0 client credentials from ${source}.
 `);
   }
-  const interactive = await runInteractiveSetupAndOAuth1Flow({
-    existingCredentials: credentials,
-    existingCredentialSource: source
-  });
-  const tokenStore = saveUserOAuthTokens(
-    interactive.credentials.consumerKey,
-    interactive.accessToken,
-    interactive.accessSecret
-  );
+  let tokenStore = source;
+  if (cliRefreshToken) {
+    const refreshed = await refreshOAuth2Token({
+      credentials,
+      refreshToken: cliRefreshToken
+    });
+    tokenStore = saveOAuth2UserTokens(credentials.clientId, {
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken ?? cliRefreshToken,
+      expiresAt: refreshed.expiresAt,
+      scope: refreshed.scope,
+      seedRefreshTokenHash: sha256Hex(cliRefreshToken)
+    });
+  } else {
+    const interactive = await runInteractiveSetupAndOAuth2Flow({
+      existingCredentials: credentials,
+      existingCredentialSource: source
+    });
+    tokenStore = interactive.tokenSource;
+  }
   const verified = await ensureAuthenticatedSession({
     allowInteractiveLogin: false,
     verifyProbe: true
   });
   const handle = verified.user?.username ? `@${verified.user.username}` : "authenticated account";
   process.stdout.write(
-    `Authenticated ${handle} successfully (credentials: ${verified.credentialSource}, user token: ${tokenStore}).
+    `Authenticated ${handle} via OAuth 2.0 successfully (credentials: ${verified.credentialSource}, user token: ${tokenStore}, refresh_token: ${Boolean(verified.refreshToken)}).
 `
   );
 }
 async function runStatusCli() {
-  const { credentials, source } = loadConsumerCredentials();
+  const { credentials, source } = loadOAuth2ClientCredentials();
   if (!credentials) {
     process.stdout.write(
       JSON.stringify(
         {
+          auth_mode: "oauth2",
           configured: false,
           credential_source: "none",
           token_cached: false,
+          has_refresh_token: false,
+          access_token_expires_at: null,
+          scopes: null,
           hint: "Call x_article_auth_status({ login: true }) in your agent or run `npx @wezzard/mcp-x-articles auth`."
         },
         null,
@@ -20304,14 +20615,18 @@ async function runStatusCli() {
     );
     return;
   }
-  const tok = loadUserOAuthTokens(credentials.consumerKey);
+  const tok = loadOAuth2UserTokens(credentials.clientId);
   process.stdout.write(
     JSON.stringify(
       {
+        auth_mode: "oauth2",
         configured: true,
         credential_source: source,
         token_cached: Boolean(tok.tokens),
-        token_source: tok.source
+        token_source: tok.source,
+        has_refresh_token: Boolean(tok.tokens?.refreshToken),
+        access_token_expires_at: tok.tokens?.expiresAt ? new Date(tok.tokens.expiresAt * 1e3).toISOString() : null,
+        scopes: tok.tokens?.scope ?? null
       },
       null,
       2
@@ -20359,29 +20674,41 @@ if (isDirectExecution()) {
 }
 export {
   DEFAULT_KEYCHAIN_SERVICE,
+  DEFAULT_OAUTH2_SCOPES,
+  OAuth2TokenError,
   PACKAGE_NAME,
   PACKAGE_VERSION,
   SERVER_INSTRUCTIONS,
-  clearConsumerCredentials,
-  clearUserOAuthTokens,
+  buildOAuth2AuthorizeUrl,
+  clearOAuth2ClientCredentials,
+  clearOAuth2UserTokens,
+  clientKeyId,
   computePreflightToken,
   configDirPath,
-  consumerKeyId,
   convertMarkdownFile,
   createMcpServer,
   detectHostConfigUi,
+  ensureAuthenticatedSession,
+  exchangeAuthorizationCode,
   extractMarkdownImageSrcs,
+  generatePkcePair,
+  getOAuth2AuthorizeUrl,
+  getOAuth2Scopes,
+  getOAuth2TokenUrl,
+  guessMediaCategory,
+  guessMediaType,
   keychainServiceName,
-  loadConsumerCredentials,
-  loadUserOAuthTokens,
+  loadOAuth2ClientCredentials,
+  loadOAuth2UserTokens,
   markdownToContentState,
+  refreshOAuth2Token,
   resolveCoverImagePath,
-  rfc3986Encode,
-  runInteractiveSetupAndOAuth1Flow,
-  saveConsumerCredentials,
-  saveUserOAuthTokens,
+  runInteractiveSetupAndOAuth2Flow,
+  saveOAuth2ClientCredentials,
+  saveOAuth2UserTokens,
   scanSensitiveFile,
   scanText,
-  signOAuth1Header,
-  verifyPreflightToken
+  sha256Hex,
+  verifyPreflightToken,
+  withOAuth2RefreshLock
 };

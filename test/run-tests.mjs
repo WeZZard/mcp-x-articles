@@ -6,11 +6,14 @@
  * 3. Live X OpenAPI v2 schema validation
  * 4. X API Playground contract test (when running locally)
  * 5. Sensitive-information scanner assertions
- * 6. OAuth 1.0a RFC 5849 HMAC-SHA1 signing & 0600 credential fallback
- * 7. End-to-end MCP stdio server protocol & mock X API v2 pipeline test
+ * 6. OAuth 2.0 PKCE S256, 0600 XDG fallback, seed refresh-token rotation guard, and Keychain roundtrip
+ * 7. End-to-end MCP stdio server + mock X API v2 + auto-refresh rotation + GIF category + reactive 401 retry
+ * 8. Browser /setup -> PKCE /oauth/callback flow & public/confidential client token auth rules
+ * 9. Native host configuration UI detection & /setup suppression
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,23 +30,38 @@ const {
   convertMarkdownFile,
   markdownToContentState,
   scanSensitiveFile,
-  signOAuth1Header,
-  runInteractiveSetupAndOAuth1Flow,
+  generatePkcePair,
+  buildOAuth2AuthorizeUrl,
+  refreshOAuth2Token,
+  runInteractiveSetupAndOAuth2Flow,
   detectHostConfigUi,
-  saveConsumerCredentials,
-  loadConsumerCredentials,
-  clearConsumerCredentials,
-  saveUserOAuthTokens,
-  loadUserOAuthTokens,
-  clearUserOAuthTokens,
+  saveOAuth2ClientCredentials,
+  loadOAuth2ClientCredentials,
+  clearOAuth2ClientCredentials,
+  saveOAuth2UserTokens,
+  loadOAuth2UserTokens,
+  clearOAuth2UserTokens,
+  sha256Hex,
+  withOAuth2RefreshLock,
+  guessMediaCategory,
 } = await import(serverBundlePath);
 
-// Ensure host IDE env vars from an outer Antigravity/Cursor session don't leak into standalone fallback tests.
-delete process.env.ANTIGRAVITY_VSCODE_HOST;
-delete process.env.ANTIGRAVITY_AUTH_SUCCESS_APP;
-delete process.env.PLUGIN_ROOT;
-delete process.env.PLUGIN_DATA;
-delete process.env.CURSOR_PLUGIN_ROOT;
+// Ensure outer IDE or OAuth env vars don't leak into standalone tests.
+for (const envKey of [
+  'ANTIGRAVITY_VSCODE_HOST',
+  'ANTIGRAVITY_AUTH_SUCCESS_APP',
+  'PLUGIN_ROOT',
+  'PLUGIN_DATA',
+  'CURSOR_PLUGIN_ROOT',
+  'X_OAUTH2_CLIENT_ID',
+  'X_OAUTH2_CLIENT_SECRET',
+  'X_OAUTH2_REFRESH_TOKEN',
+  'X_OAUTH2_ACCESS_TOKEN',
+  'X_CLIENT_ID',
+  'X_CLIENT_SECRET',
+]) {
+  delete process.env[envKey];
+}
 
 const mediaMap = JSON.parse(readFileSync(join(here, 'media-map.json'), 'utf8'));
 const fixturePath = join(here, 'fixture.md');
@@ -151,13 +169,12 @@ console.log('live OpenAPI schema validation: OK');
 // --- 4. Playground contract test (skipped if playground is not running) ----
 
 const PLAYGROUND = process.env.PLAYGROUND_URL ?? 'http://127.0.0.1:8791';
-const OAUTH1 =
-  'OAuth oauth_consumer_key="t",oauth_token="t",oauth_signature_method="HMAC-SHA1",oauth_timestamp="1",oauth_nonce="n",oauth_version="1.0",oauth_signature="s"';
+const BEARER_AUTH = 'Bearer mock_playground_user_token';
 
 async function postDraft(body) {
   const res = await fetch(`${PLAYGROUND}/2/articles/draft`, {
     method: 'POST',
-    headers: { Authorization: OAUTH1, 'Content-Type': 'application/json' },
+    headers: { Authorization: BEARER_AUTH, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   return { status: res.status, body: await res.json() };
@@ -183,7 +200,7 @@ if (!reachable) {
 
   const pub = await fetch(`${PLAYGROUND}/2/articles/1234567890/publish`, {
     method: 'POST',
-    headers: { Authorization: OAUTH1 },
+    headers: { Authorization: BEARER_AUTH },
   });
   const pubBody = await pub.json();
   assert.equal(pub.status, 200);
@@ -223,115 +240,239 @@ try {
   );
   console.log('scan-sensitive tests: OK');
 
-  // --- 6. OAuth 1.0a signing & isolated 0600 XDG fallback ------------------
+  // --- 6. OAuth 2.0 PKCE, 0600 XDG fallback & seed rotation guard ---------
 
-  const authHeader = signOAuth1Header({
-    method: 'GET',
-    url: 'https://api.x.com/2/media/upload?media_id=999&command=STATUS',
-    credentials: {
-      consumerKey: 'xvz1evFS4wEEPTGEFPHBog',
-      consumerSecret: 'kAcSOqF21Fu85e7zjz7ZN2U4ZRhfV3WpwPAoE3Z7kBw',
-      tokenKey: '370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb',
-      tokenSecret: 'LswwdoUaIvS8ltyTt5jkRh4J50vUPVVHtR2YPi5kE',
-    },
-    nonce: 'kYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg',
-    timestamp: '1318622958',
-  });
-  assert.ok(authHeader.startsWith('OAuth '));
-  assert.ok(authHeader.includes('oauth_signature='));
+  const pkce = generatePkcePair();
+  assert.ok(pkce.codeVerifier.length >= 43);
+  assert.equal(
+    pkce.codeChallenge,
+    createHash('sha256').update(pkce.codeVerifier, 'utf8').digest('base64url'),
+  );
+  const sampleAuthUrl = new URL(
+    buildOAuth2AuthorizeUrl({
+      clientId: 'cid_sample',
+      redirectUri: 'http://127.0.0.1:8976/oauth/callback',
+      state: 'st_sample',
+      codeChallenge: pkce.codeChallenge,
+    }),
+  );
+  assert.equal(sampleAuthUrl.searchParams.get('response_type'), 'code');
+  assert.equal(sampleAuthUrl.searchParams.get('code_challenge_method'), 'S256');
+  assert.ok(sampleAuthUrl.searchParams.get('scope')?.includes('offline.access'));
+  assert.ok(sampleAuthUrl.searchParams.get('scope')?.includes('media.write'));
+  assert.ok(sampleAuthUrl.searchParams.get('scope')?.includes('tweet.write'));
+
+  assert.equal(guessMediaCategory('image/png'), 'tweet_image');
+  assert.equal(guessMediaCategory('image/gif'), 'tweet_gif');
+  assert.equal(guessMediaCategory('video/mp4'), 'tweet_video');
 
   const prevXdg = process.env.XDG_CONFIG_HOME;
   const prevDisableKc = process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN;
-  const prevKey = process.env.X_OAUTH_CONSUMER_KEY;
-  const prevSec = process.env.X_OAUTH_CONSUMER_SECRET;
+  const prevCid = process.env.X_OAUTH2_CLIENT_ID;
+  const prevCsec = process.env.X_OAUTH2_CLIENT_SECRET;
+  const prevRt = process.env.X_OAUTH2_REFRESH_TOKEN;
   try {
     const xdgDir = join(tempDir, 'xdg');
     process.env.XDG_CONFIG_HOME = xdgDir;
     process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN = '1';
     // Verify unexpanded Antigravity template placeholders fall through cleanly!
-    process.env.X_OAUTH_CONSUMER_KEY = '${X_OAUTH_CONSUMER_KEY}';
-    process.env.X_OAUTH_CONSUMER_SECRET = '${X_OAUTH_CONSUMER_SECRET}';
+    process.env.X_OAUTH2_CLIENT_ID = '${X_OAUTH2_CLIENT_ID}';
+    process.env.X_OAUTH2_CLIENT_SECRET = '${X_OAUTH2_CLIENT_SECRET}';
+    process.env.X_OAUTH2_REFRESH_TOKEN = '${X_OAUTH2_REFRESH_TOKEN}';
 
-    const savedSrc = saveConsumerCredentials({
-      consumerKey: 'ck_test_1',
-      consumerSecret: 'cs_test_1',
+    const savedSrc = saveOAuth2ClientCredentials({
+      clientId: 'cid_test_1',
+      clientSecret: 'csec_test_1',
     });
     assert.equal(savedSrc, 'xdg-config');
-    const loadedCreds = loadConsumerCredentials();
+    const loadedCreds = loadOAuth2ClientCredentials();
     assert.equal(loadedCreds.source, 'xdg-config');
-    assert.equal(loadedCreds.credentials.consumerKey, 'ck_test_1');
+    assert.equal(loadedCreds.credentials.clientId, 'cid_test_1');
+    assert.equal(loadedCreds.credentials.clientSecret, 'csec_test_1');
 
-    saveUserOAuthTokens('ck_test_1', 'at_test_1', 'as_test_1');
-    const loadedTok = loadUserOAuthTokens('ck_test_1');
-    assert.equal(loadedTok.source, 'xdg-config');
-    assert.equal(loadedTok.tokens.accessToken, 'at_test_1');
+    const nowSec = Math.floor(Date.now() / 1000);
+    process.env.X_OAUTH2_REFRESH_TOKEN = 'seed_rt_v1';
+    const initialEnvTok = loadOAuth2UserTokens('cid_test_1');
+    assert.equal(initialEnvTok.source, 'env');
+    assert.equal(initialEnvTok.tokens.refreshToken, 'seed_rt_v1');
+    assert.equal(initialEnvTok.tokens.seedRefreshTokenHash, sha256Hex('seed_rt_v1'));
 
-    const credStat = statSync(join(xdgDir, 'mcp-x-articles', 'credentials.json'));
-    assert.equal(credStat.mode & 0o777, 0o600, 'credentials.json must have mode 0600');
+    saveOAuth2UserTokens('cid_test_1', {
+      accessToken: 'rot_at_1',
+      refreshToken: 'rot_rt_1',
+      expiresAt: nowSec + 7200,
+      scope: 'tweet.read tweet.write users.read media.write offline.access',
+      seedRefreshTokenHash: sha256Hex('seed_rt_v1'),
+    });
+    const loadedRotated = loadOAuth2UserTokens('cid_test_1');
+    assert.equal(loadedRotated.source, 'xdg-config');
+    assert.equal(loadedRotated.tokens.accessToken, 'rot_at_1');
+    assert.equal(loadedRotated.tokens.refreshToken, 'rot_rt_1');
+
+    // Updating env to a brand-new Console seed must supersede the older rotated cache.
+    process.env.X_OAUTH2_REFRESH_TOKEN = 'seed_rt_v2';
+    const nextEnvTok = loadOAuth2UserTokens('cid_test_1');
+    assert.equal(nextEnvTok.source, 'env');
+    assert.equal(nextEnvTok.tokens.refreshToken, 'seed_rt_v2');
+    assert.equal(nextEnvTok.tokens.seedRefreshTokenHash, sha256Hex('seed_rt_v2'));
+
+    const credStat = statSync(join(xdgDir, 'mcp-x-articles', 'oauth2_client.json'));
+    assert.equal(credStat.mode & 0o777, 0o600, 'oauth2_client.json must have mode 0600');
+    const tokStat = statSync(join(xdgDir, 'mcp-x-articles', 'oauth2_tokens.json'));
+    assert.equal(tokStat.mode & 0o777, 0o600, 'oauth2_tokens.json must have mode 0600');
+
+    // Verify withOAuth2RefreshLock serializes concurrent callers without overlap.
+    let activeWorkers = 0;
+    let maxConcurrent = 0;
+    await Promise.all(
+      [1, 2, 3].map((n) =>
+        withOAuth2RefreshLock(async () => {
+          activeWorkers += 1;
+          maxConcurrent = Math.max(maxConcurrent, activeWorkers);
+          await new Promise((r) => setTimeout(r, n * 15));
+          activeWorkers -= 1;
+        }),
+      ),
+    );
+    assert.equal(maxConcurrent, 1, 'withOAuth2RefreshLock must serialize concurrent refresh callers');
   } finally {
     if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = prevXdg;
     if (prevDisableKc === undefined) delete process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN;
     else process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN = prevDisableKc;
-    if (prevKey === undefined) delete process.env.X_OAUTH_CONSUMER_KEY;
-    else process.env.X_OAUTH_CONSUMER_KEY = prevKey;
-    if (prevSec === undefined) delete process.env.X_OAUTH_CONSUMER_SECRET;
-    else process.env.X_OAUTH_CONSUMER_SECRET = prevSec;
+    if (prevCid === undefined) delete process.env.X_OAUTH2_CLIENT_ID;
+    else process.env.X_OAUTH2_CLIENT_ID = prevCid;
+    if (prevCsec === undefined) delete process.env.X_OAUTH2_CLIENT_SECRET;
+    else process.env.X_OAUTH2_CLIENT_SECRET = prevCsec;
+    if (prevRt === undefined) delete process.env.X_OAUTH2_REFRESH_TOKEN;
+    else process.env.X_OAUTH2_REFRESH_TOKEN = prevRt;
   }
-  console.log('oauth1 & 0600 credential fallback tests: OK');
+  console.log('oauth2 PKCE, rotation guard & 0600 fallback tests: OK');
 
   if (process.platform === 'darwin') {
     const prevKcSvc = process.env.MCP_X_ARTICLES_KEYCHAIN_SERVICE;
     const prevDisableKc2 = process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN;
-    const prevKey2 = process.env.X_OAUTH_CONSUMER_KEY;
-    const prevSec2 = process.env.X_OAUTH_CONSUMER_SECRET;
+    const prevCid2 = process.env.X_OAUTH2_CLIENT_ID;
+    const prevCsec2 = process.env.X_OAUTH2_CLIENT_SECRET;
+    const prevRt2 = process.env.X_OAUTH2_REFRESH_TOKEN;
     process.env.MCP_X_ARTICLES_KEYCHAIN_SERVICE = `@wezzard/mcp-x-articles-test-${process.pid}`;
     delete process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN;
-    delete process.env.X_OAUTH_CONSUMER_KEY;
-    delete process.env.X_OAUTH_CONSUMER_SECRET;
+    delete process.env.X_OAUTH2_CLIENT_ID;
+    delete process.env.X_OAUTH2_CLIENT_SECRET;
+    delete process.env.X_OAUTH2_REFRESH_TOKEN;
     try {
-      const kcSource = saveConsumerCredentials({
-        consumerKey: 'kc_ck_live_test',
-        consumerSecret: 'kc_cs_live_test',
+      const kcSource = saveOAuth2ClientCredentials({
+        clientId: 'kc_cid_live_test',
+        clientSecret: 'kc_csec_live_test',
       });
       if (kcSource === 'macos-keychain') {
-        const readBack = loadConsumerCredentials();
+        const readBack = loadOAuth2ClientCredentials();
         assert.equal(readBack.source, 'macos-keychain');
-        assert.equal(readBack.credentials.consumerKey, 'kc_ck_live_test');
+        assert.equal(readBack.credentials.clientId, 'kc_cid_live_test');
 
-        const tokSource = saveUserOAuthTokens('kc_ck_live_test', 'kc_at_live', 'kc_as_live');
+        const tokSource = saveOAuth2UserTokens('kc_cid_live_test', {
+          accessToken: 'kc_at_live',
+          refreshToken: 'kc_rt_live',
+          expiresAt: Math.floor(Date.now() / 1000) + 7200,
+          scope: 'tweet.read tweet.write users.read media.write offline.access',
+        });
         assert.equal(tokSource, 'macos-keychain');
-        const readTok = loadUserOAuthTokens('kc_ck_live_test');
+        const readTok = loadOAuth2UserTokens('kc_cid_live_test');
         assert.equal(readTok.source, 'macos-keychain');
         assert.equal(readTok.tokens.accessToken, 'kc_at_live');
+        assert.equal(readTok.tokens.refreshToken, 'kc_rt_live');
         console.log('macos keychain roundtrip test: OK');
       } else {
         console.log('macos keychain roundtrip test: SKIPPED (keychain locked/unavailable)');
       }
     } finally {
-      clearUserOAuthTokens('kc_ck_live_test');
-      clearConsumerCredentials();
+      clearOAuth2UserTokens('kc_cid_live_test');
+      clearOAuth2ClientCredentials();
       if (prevKcSvc === undefined) delete process.env.MCP_X_ARTICLES_KEYCHAIN_SERVICE;
       else process.env.MCP_X_ARTICLES_KEYCHAIN_SERVICE = prevKcSvc;
       if (prevDisableKc2 === undefined) delete process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN;
       else process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN = prevDisableKc2;
-      if (prevKey2 === undefined) delete process.env.X_OAUTH_CONSUMER_KEY;
-      else process.env.X_OAUTH_CONSUMER_KEY = prevKey2;
-      if (prevSec2 === undefined) delete process.env.X_OAUTH_CONSUMER_SECRET;
-      else process.env.X_OAUTH_CONSUMER_SECRET = prevSec2;
+      if (prevCid2 === undefined) delete process.env.X_OAUTH2_CLIENT_ID;
+      else process.env.X_OAUTH2_CLIENT_ID = prevCid2;
+      if (prevCsec2 === undefined) delete process.env.X_OAUTH2_CLIENT_SECRET;
+      else process.env.X_OAUTH2_CLIENT_SECRET = prevCsec2;
+      if (prevRt2 === undefined) delete process.env.X_OAUTH2_REFRESH_TOKEN;
+      else process.env.X_OAUTH2_REFRESH_TOKEN = prevRt2;
     }
   }
 
-  // --- 7. End-to-end MCP stdio server + mock X API v2 pipeline -------------
+  // --- 7. End-to-end MCP stdio server + mock X API v2 + refresh rotation ---
 
   let nextMediaId = 5000000001;
   const recordedRequests = [];
   let statusChecks = 0;
+  let activeRefreshToken = 'initial_seed_rt';
+  let activeAccessToken = '';
+  let refreshCalls = 0;
+  let forceOne401 = true;
 
   const mockApiServer = createServer(async (req, res) => {
     const chunks = [];
     for await (const ch of req) chunks.push(ch);
     const bodyText = Buffer.concat(chunks).toString('utf8');
+
+    res.setHeader('Content-Type', 'application/json');
+
+    if (req.method === 'POST' && req.url === '/2/oauth2/token') {
+      const form = new URLSearchParams(bodyText);
+      recordedRequests.push({
+        method: req.method,
+        url: req.url,
+        auth: req.headers.authorization,
+        body: Object.fromEntries(form.entries()),
+      });
+
+      const expectedBasic = 'Basic ' + Buffer.from('mock_cid:mock_csec', 'utf8').toString('base64');
+      assert.equal(req.headers.authorization, expectedBasic, 'Confidential client must use Basic Auth');
+      assert.equal(form.has('client_id'), false, 'Confidential client must NOT include client_id in body');
+      assert.equal(form.has('client_secret'), false, 'Confidential client must NOT include client_secret in body');
+
+      if (form.get('grant_type') === 'refresh_token') {
+        const providedRt = form.get('refresh_token');
+        if (providedRt !== activeRefreshToken) {
+          res.statusCode = 400;
+          res.end(
+            JSON.stringify({
+              error: 'invalid_grant',
+              error_description: `Refresh token ${providedRt} was already rotated or invalid (expected ${activeRefreshToken})`,
+            }),
+          );
+          return;
+        }
+        refreshCalls += 1;
+        activeAccessToken = `access_tok_${refreshCalls}`;
+        activeRefreshToken = `rotated_rt_${refreshCalls}`;
+        res.end(
+          JSON.stringify({
+            token_type: 'bearer',
+            expires_in: 7200,
+            access_token: activeAccessToken,
+            refresh_token: activeRefreshToken,
+            scope: 'tweet.read tweet.write users.read media.write offline.access',
+          }),
+        );
+        return;
+      }
+
+      if (form.get('grant_type') === 'authorization_code') {
+        res.end(
+          JSON.stringify({
+            token_type: 'bearer',
+            expires_in: 7200,
+            access_token: 'pkce_at_999',
+            refresh_token: 'pkce_rt_888',
+            scope: 'tweet.read tweet.write users.read media.write offline.access',
+          }),
+        );
+        return;
+      }
+    }
+
     const parsedBody = bodyText ? JSON.parse(bodyText) : null;
     recordedRequests.push({
       method: req.method,
@@ -340,13 +481,23 @@ try {
       body: parsedBody,
     });
 
-    res.setHeader('Content-Type', 'application/json');
+    if (req.headers.authorization !== `Bearer ${activeAccessToken}`) {
+      res.statusCode = 401;
+      res.end(JSON.stringify({ title: 'Unauthorized', status: 401 }));
+      return;
+    }
 
     if (req.method === 'GET' && req.url === '/2/users/me') {
       res.end(JSON.stringify({ data: { id: '42', username: 'mockwriter', name: 'Mock Writer' } }));
       return;
     }
     if (req.method === 'POST' && req.url === '/2/media/upload/initialize') {
+      if (forceOne401) {
+        forceOne401 = false;
+        res.statusCode = 401;
+        res.end(JSON.stringify({ title: 'Unauthorized', status: 401 }));
+        return;
+      }
       const id = String(nextMediaId++);
       res.end(JSON.stringify({ data: { id } }));
       return;
@@ -356,7 +507,6 @@ try {
       return;
     }
     if (req.method === 'POST' && /^\/2\/media\/upload\/\d+\/finalize$/.test(req.url)) {
-      // Exercise async processing_info status polling on the first media item!
       if (statusChecks === 0) {
         statusChecks += 1;
         res.end(
@@ -389,15 +539,16 @@ try {
   await new Promise((resolveListen) => mockApiServer.listen(0, '127.0.0.1', resolveListen));
   const mockPort = mockApiServer.address().port;
 
-  // Create a sample post directory with an inline PNG and an auto-detected sibling cover image.
+  // Create a sample post directory with inline PNG, animated GIF, and auto-detected cover PNG.
   const postDir = join(tempDir, 'sample-post');
   execFileSync('mkdir', ['-p', postDir]);
-  // Minimal valid 1x1 PNG
   const onePixelPng = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
   );
+  const onePixelGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
   writeFileSync(join(postDir, 'inline.png'), onePixelPng);
+  writeFileSync(join(postDir, 'anim.gif'), onePixelGif);
   writeFileSync(join(postDir, 'cover-image-x-article.png'), onePixelPng);
   const postMdPath = join(postDir, 'index.md');
   writeFileSync(
@@ -408,19 +559,22 @@ try {
       'Body paragraph with **bold** text.',
       '',
       '![Screen reader description](./inline.png "Figure 1")',
+      '',
+      '![Animated demo](./anim.gif "Figure 2")',
     ].join('\n'),
   );
 
+  const e2eXdgDir = join(tempDir, 'xdg-e2e');
   const transport = new StdioClientTransport({
     command: 'node',
     args: [serverBundlePath],
     env: {
       ...process.env,
       X_API_BASE_URL: `http://127.0.0.1:${mockPort}`,
-      X_OAUTH_CONSUMER_KEY: 'mock_ck',
-      X_OAUTH_CONSUMER_SECRET: 'mock_cs',
-      X_OAUTH_ACCESS_TOKEN: 'mock_at',
-      X_OAUTH_ACCESS_TOKEN_SECRET: 'mock_as',
+      X_OAUTH2_CLIENT_ID: 'mock_cid',
+      X_OAUTH2_CLIENT_SECRET: 'mock_csec',
+      X_OAUTH2_REFRESH_TOKEN: 'initial_seed_rt',
+      XDG_CONFIG_HOME: e2eXdgDir,
       MCP_X_ARTICLES_DISABLE_KEYCHAIN: '1',
     },
     stderr: 'pipe',
@@ -430,7 +584,6 @@ try {
   try {
     await mcpClient.connect(transport);
 
-    // Check server instructions and flat tool schemas + annotations.
     const instructions = mcpClient.getInstructions();
     assert.ok(instructions?.includes('x_article_preflight'));
 
@@ -445,7 +598,21 @@ try {
     assert.equal(pubTool.annotations?.destructiveHint, true);
     assert.equal(pubTool.annotations?.idempotentHint, false);
 
-    // 7a. Gate 1 rejects create_draft without a valid preflight_token.
+    // 7a. Bootstrap auth from env X_OAUTH2_REFRESH_TOKEN -> rotates initial_seed_rt -> access_tok_1 + rotated_rt_1
+    const authRes = await mcpClient.callTool({
+      name: 'x_article_auth_status',
+      arguments: { verify: true },
+    });
+    assert.ok(!authRes.isError, `x_article_auth_status failed: ${authRes.content[0]?.text}`);
+    const authJson = JSON.parse(authRes.content[0].text);
+    assert.equal(authJson.auth_mode, 'oauth2');
+    assert.equal(authJson.configured, true);
+    assert.equal(authJson.verified, true);
+    assert.equal(authJson.has_refresh_token, true);
+    assert.equal(authJson.refreshed, true);
+    assert.equal(authJson.authenticated_user.username, 'mockwriter');
+
+    // 7b. Gate 1 rejects create_draft without a valid preflight_token.
     const rejected = await mcpClient.callTool({
       name: 'x_article_create_draft',
       arguments: {
@@ -454,9 +621,8 @@ try {
       },
     });
     assert.equal(rejected.isError, true);
-    assert.equal(recordedRequests.length, 0, 'No X API requests may fire when preflight_token is invalid');
 
-    // 7b. Run preflight -> verify token, auto-detected cover, and MCP image blocks.
+    // 7c. Run preflight -> verify token, auto-detected cover, and MCP image blocks.
     const preflightRes = await mcpClient.callTool({
       name: 'x_article_preflight',
       arguments: { markdown_path: postMdPath },
@@ -467,9 +633,9 @@ try {
     assert.ok(preflightJson.cover_image_path.endsWith('cover-image-x-article.png'));
     assert.ok(preflightJson.preflight_token.startsWith('sha256:v1:'));
     const imageBlocks = preflightRes.content.filter((c) => c.type === 'image');
-    assert.equal(imageBlocks.length, 2, 'Both inline.png and cover-image-x-article.png should attach as MCP image blocks');
+    assert.equal(imageBlocks.length, 3, 'inline.png, anim.gif, and cover-image-x-article.png should attach');
 
-    // 7c. Mutating the file invalidates preflight_token.
+    // 7d. Mutating the file invalidates preflight_token.
     writeFileSync(postMdPath, readFileSync(postMdPath, 'utf8') + '\nExtra paragraph.\n');
     const staleRes = await mcpClient.callTool({
       name: 'x_article_create_draft',
@@ -480,7 +646,7 @@ try {
     });
     assert.equal(staleRes.isError, true);
 
-    // 7d. Re-scan and create draft -> verify chunked uploads + draft payload + editor_url.
+    // 7e. Re-scan and create draft -> verify reactive 401 refresh + GIF category + rotated token reuse!
     const preflightRes2 = await mcpClient.callTool({
       name: 'x_article_preflight',
       arguments: { markdown_path: postMdPath },
@@ -498,55 +664,96 @@ try {
     const draftJson = JSON.parse(draftRes.content[0].text);
     assert.equal(draftJson.article_id, '777777777777777777');
     assert.equal(draftJson.editor_url, 'https://x.com/compose/articles/edit/777777777777777777');
-    assert.equal(draftJson.cover_media_id, '5000000002');
+    assert.equal(draftJson.cover_media_id, '5000000003');
+    assert.equal(refreshCalls, 2, 'Should have refreshed once for initial seed and once on reactive 401 retry');
+
+    const initCalls = recordedRequests.filter((r) => r.url === '/2/media/upload/initialize');
+    assert.ok(initCalls.some((r) => r.body?.media_category === 'tweet_image'));
+    assert.ok(initCalls.some((r) => r.body?.media_category === 'tweet_gif'));
 
     const draftApiCall = recordedRequests.find((r) => r.url === '/2/articles/draft');
     assert.ok(draftApiCall, 'POST /2/articles/draft should have been called');
-    assert.ok(draftApiCall.auth?.startsWith('OAuth '), 'OAuth 1.0a header missing on draft call');
+    assert.equal(
+      draftApiCall.auth,
+      'Bearer access_tok_2',
+      'Draft request must use refreshed Bearer access_tok_2',
+    );
     assert.deepEqual(draftApiCall.body.cover_media, {
       media_category: 'tweet_image',
-      media_id: '5000000002',
+      media_id: '5000000003',
     });
     const uploadedImgEntity = draftApiCall.body.content_state.entities.find((e) => e.value.type === 'image');
     assert.equal(uploadedImgEntity.value.data.media_items[0].media_id, '5000000001');
     assert.equal(uploadedImgEntity.value.data.caption, 'Figure 1');
 
-    // 7e. Publish draft -> verify post_url with authenticated username.
+    // 7f. Publish draft -> verify post_url with Bearer token and rotated refresh guard.
     const pubRes = await mcpClient.callTool({
       name: 'x_article_publish',
       arguments: { article_id: draftJson.article_id },
     });
-    assert.ok(!pubRes.isError);
+    assert.ok(!pubRes.isError, `publish failed: ${pubRes.content[0]?.text}`);
     const pubJson = JSON.parse(pubRes.content[0].text);
     assert.equal(pubJson.post_id, '888888888888888888');
     assert.equal(pubJson.post_url, 'https://x.com/mockwriter/status/888888888888888888');
 
-    console.log('end-to-end MCP stdio server & mock X API v2 pipeline: OK');
+    console.log('end-to-end MCP stdio server & OAuth 2.0 refresh rotation pipeline: OK');
   } finally {
     await mcpClient.close().catch(() => {});
     mockApiServer.close();
   }
 
-  // --- 8. Port-conflict random-port fallback + Browser /setup -> /pin flow ---
+  // --- 8. Browser /setup -> PKCE /oauth/callback flow & public client rule -
 
-  const mockOAuthServer = createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/oauth/request_token') {
-      assert.ok(req.headers.authorization?.includes('oauth_callback="oob"'));
-      res.end('oauth_token=req_tok_123&oauth_token_secret=req_sec_456&oauth_callback_confirmed=true');
+  let seenPublicClientBody = null;
+  const mockOAuthServer = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const ch of req) chunks.push(ch);
+    const bodyText = Buffer.concat(chunks).toString('utf8');
+    res.setHeader('Content-Type', 'application/json');
+
+    if (req.method === 'POST' && req.url === '/2/oauth2/token') {
+      const form = new URLSearchParams(bodyText);
+      const grantType = form.get('grant_type');
+      if (grantType === 'refresh_token' && !req.headers.authorization) {
+        // Public client path: must NOT send Basic auth header and MUST pass client_id in body.
+        seenPublicClientBody = Object.fromEntries(form.entries());
+        res.end(
+          JSON.stringify({
+            token_type: 'bearer',
+            expires_in: 7200,
+            access_token: 'pub_at_123',
+            refresh_token: 'pub_rt_456',
+          }),
+        );
+        return;
+      }
+
+      const expectedBasic =
+        'Basic ' + Buffer.from('mock_browser_cid:mock_browser_csec', 'utf8').toString('base64');
+      assert.equal(req.headers.authorization, expectedBasic);
+      assert.equal(form.has('client_id'), false);
+      assert.equal(form.get('grant_type'), 'authorization_code');
+      assert.equal(form.get('code'), 'auth_code_123');
+      assert.ok(form.get('code_verifier'));
+      assert.ok(form.get('redirect_uri'));
+      res.end(
+        JSON.stringify({
+          token_type: 'bearer',
+          expires_in: 7200,
+          access_token: 'pkce_at_999',
+          refresh_token: 'pkce_rt_888',
+          scope: 'tweet.read tweet.write users.read media.write offline.access',
+        }),
+      );
       return;
     }
-    if (req.method === 'POST' && req.url === '/oauth/access_token') {
-      assert.ok(req.headers.authorization?.includes('oauth_verifier="7654321"'));
-      res.end('oauth_token=acc_tok_999&oauth_token_secret=acc_sec_888');
-      return;
-    }
+
     res.statusCode = 404;
     res.end('not found');
   });
   await new Promise((r) => mockOAuthServer.listen(0, '127.0.0.1', r));
   const oauthMockPort = mockOAuthServer.address().port;
 
-  // Occupy a port to intentionally trigger EADDRINUSE and verify random-port fallback!
   const blocker = createServer((_req, res) => res.end('busy'));
   await new Promise((r) => blocker.listen(0, '127.0.0.1', r));
   const occupiedPort = blocker.address().port;
@@ -556,22 +763,44 @@ try {
     MCP_X_ARTICLES_DISABLE_KEYCHAIN: process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN,
     MCP_X_ARTICLES_NO_BROWSER: process.env.MCP_X_ARTICLES_NO_BROWSER,
     X_OAUTH_CALLBACK_PORT: process.env.X_OAUTH_CALLBACK_PORT,
-    X_OAUTH_BASE_URL: process.env.X_OAUTH_BASE_URL,
-    X_OAUTH_CONSUMER_KEY: process.env.X_OAUTH_CONSUMER_KEY,
-    X_OAUTH_CONSUMER_SECRET: process.env.X_OAUTH_CONSUMER_SECRET,
+    X_API_BASE_URL: process.env.X_API_BASE_URL,
+    X_OAUTH2_CLIENT_ID: process.env.X_OAUTH2_CLIENT_ID,
+    X_OAUTH2_CLIENT_SECRET: process.env.X_OAUTH2_CLIENT_SECRET,
+    X_OAUTH2_REFRESH_TOKEN: process.env.X_OAUTH2_REFRESH_TOKEN,
   };
 
   try {
     process.env.XDG_CONFIG_HOME = join(tempDir, 'xdg-browser-setup');
     process.env.MCP_X_ARTICLES_DISABLE_KEYCHAIN = '1';
     process.env.MCP_X_ARTICLES_NO_BROWSER = '1';
-    process.env.X_OAUTH_CALLBACK_PORT = String(occupiedPort);
-    process.env.X_OAUTH_BASE_URL = `http://127.0.0.1:${oauthMockPort}`;
-    delete process.env.X_OAUTH_CONSUMER_KEY;
-    delete process.env.X_OAUTH_CONSUMER_SECRET;
+    process.env.X_API_BASE_URL = `http://127.0.0.1:${oauthMockPort}`;
+    delete process.env.X_OAUTH2_CLIENT_ID;
+    delete process.env.X_OAUTH2_CLIENT_SECRET;
+    delete process.env.X_OAUTH2_REFRESH_TOKEN;
 
+    // 8a. Public client token refresh must omit Basic Auth and pass client_id in form body.
+    const pubRes = await refreshOAuth2Token({
+      credentials: { clientId: 'public_cid_only' },
+      refreshToken: 'public_rt_seed',
+    });
+    assert.equal(pubRes.accessToken, 'pub_at_123');
+    assert.equal(seenPublicClientBody.client_id, 'public_cid_only');
+
+    // 8b. Explicit busy port must fail loudly with EADDRINUSE + guidance.
+    process.env.X_OAUTH_CALLBACK_PORT = String(occupiedPort);
+    await assert.rejects(
+      () =>
+        runInteractiveSetupAndOAuth2Flow({
+          existingCredentials: null,
+          existingCredentialSource: 'none',
+        }),
+      /EADDRINUSE/,
+    );
+
+    // 8c. Dynamic free port -> GET /setup -> POST /setup -> 302 authorize URL -> GET /oauth/callback -> tokens!
+    process.env.X_OAUTH_CALLBACK_PORT = '0';
     let setupEntryUrl = '';
-    const flowPromise = runInteractiveSetupAndOAuth1Flow({
+    const flowPromise = runInteractiveSetupAndOAuth2Flow({
       existingCredentials: null,
       existingCredentialSource: 'none',
       onServerReady: (url) => {
@@ -579,13 +808,11 @@ try {
       },
     });
 
-    // Wait until onServerReady supplies the bound random-port /setup URL.
     while (!setupEntryUrl) {
       await new Promise((r) => setTimeout(r, 10));
     }
 
     const parsedSetup = new URL(setupEntryUrl);
-    assert.notEqual(Number(parsedSetup.port), occupiedPort, 'Must fall back to a random free port on EADDRINUSE');
     const csrf = parsedSetup.searchParams.get('s');
     assert.ok(csrf, 'CSRF session token missing on /setup URL');
 
@@ -594,62 +821,56 @@ try {
     const setupHtml = await getSetup.text();
     assert.ok(setupHtml.includes('Save to Keychain'));
 
-    // Submit API Key + Secret to POST /setup -> expect 302 redirect to /pin
     const postSetup = await fetch(`http://127.0.0.1:${parsedSetup.port}/setup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         s: csrf,
-        consumer_key: 'browser_ck',
-        consumer_secret: 'browser_cs',
+        client_id: 'mock_browser_cid',
+        client_secret: 'mock_browser_csec',
       }),
       redirect: 'manual',
     });
     assert.equal(postSetup.status, 302);
-    const pinLocation = postSetup.headers.get('location');
-    assert.ok(pinLocation?.includes('/pin?s='));
+    const authRedirect = new URL(postSetup.headers.get('location'));
+    assert.equal(authRedirect.origin, 'https://x.com');
+    const cbUri = authRedirect.searchParams.get('redirect_uri');
+    const oauthState = authRedirect.searchParams.get('state');
+    assert.ok(cbUri && oauthState);
 
-    // Submit 7-digit OOB PIN to POST /pin -> completes flow!
-    const postPin = await fetch(pinLocation.replace('/pin?s=' + csrf, '/pin'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        s: csrf,
-        verifier: '7654321',
-      }),
-    });
-    assert.equal(postPin.status, 200);
+    const cbResp = await fetch(`${cbUri}?code=auth_code_123&state=${encodeURIComponent(oauthState)}`);
+    assert.equal(cbResp.status, 200);
 
     const authResult = await flowPromise;
-    assert.equal(authResult.usedOobPinFallback, true);
-    assert.notEqual(authResult.boundPort, occupiedPort);
-    assert.equal(authResult.credentials.consumerKey, 'browser_ck');
-    assert.equal(authResult.accessToken, 'acc_tok_999');
+    assert.equal(authResult.credentials.clientId, 'mock_browser_cid');
+    assert.equal(authResult.accessToken, 'pkce_at_999');
+    assert.equal(authResult.refreshToken, 'pkce_rt_888');
 
-    const persistedCreds = loadConsumerCredentials();
-    assert.equal(persistedCreds.credentials.consumerKey, 'browser_ck');
-    console.log('browser /setup + port-conflict random-port OOB fallback test: OK');
+    const persistedCreds = loadOAuth2ClientCredentials();
+    assert.equal(persistedCreds.credentials.clientId, 'mock_browser_cid');
+    const persistedTok = loadOAuth2UserTokens('mock_browser_cid');
+    assert.equal(persistedTok.tokens.accessToken, 'pkce_at_999');
+    assert.equal(persistedTok.tokens.refreshToken, 'pkce_rt_888');
+    console.log('browser /setup -> PKCE /oauth/callback flow tests: OK');
 
     // --- 9. Native host configuration UI (Antigravity / Cursor) suppresses /setup Web UI ---
     process.env.ANTIGRAVITY_VSCODE_HOST = '1';
     process.env.PLUGIN_ROOT = '/Users/example/.gemini/config/plugins/x-articles';
-    process.env.X_OAUTH_CONSUMER_KEY = '${X_OAUTH_CONSUMER_KEY}';
-    process.env.X_OAUTH_CONSUMER_SECRET = '${X_OAUTH_CONSUMER_SECRET}';
+    process.env.X_OAUTH2_CLIENT_ID = '${X_OAUTH2_CLIENT_ID}';
+    process.env.X_OAUTH2_CLIENT_SECRET = '${X_OAUTH2_CLIENT_SECRET}';
 
     const agyHost = detectHostConfigUi();
     assert.equal(agyHost.hasNativeConfigUi, true);
     assert.equal(agyHost.hostName, 'antigravity');
     assert.equal(agyHost.configUiUrl, 'customization://x-articles');
 
-    // Even though browser_ck was saved to XDG/Keychain above, native UI mode must not silently fall back to it
-    // when the native plugin configuration fields are empty.
-    const nativeCreds = loadConsumerCredentials();
+    const nativeCreds = loadOAuth2ClientCredentials();
     assert.equal(nativeCreds.credentials, null);
     assert.equal(nativeCreds.source, 'none');
 
     await assert.rejects(
       () =>
-        runInteractiveSetupAndOAuth1Flow({
+        runInteractiveSetupAndOAuth2Flow({
           existingCredentials: null,
           existingCredentialSource: 'none',
         }),

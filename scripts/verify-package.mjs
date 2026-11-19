@@ -48,11 +48,12 @@ assert.ok(!cursorRaw.includes('X_BEARER_TOKEN'), '.cursor-plugin/plugin.json mus
 assert.ok(agyMcpRaw.includes('dist/server.mjs'));
 assert.ok(!agyMcpRaw.includes('xmcp-stdio.py'), 'mcp_config.json must not reference legacy Python script');
 assert.ok(!agyMcpRaw.includes('X_BEARER_TOKEN'), 'mcp_config.json must not include unused X_BEARER_TOKEN');
+assert.ok(!agyMcpRaw.includes('X_OAUTH_CONSUMER_KEY'), 'mcp_config.json must not include legacy OAuth 1.0a X_OAUTH_CONSUMER_KEY');
+assert.ok(!cursorRaw.includes('X_OAUTH_CONSUMER_KEY'), '.cursor-plugin/plugin.json must not include legacy OAuth 1.0a X_OAUTH_CONSUMER_KEY');
 for (const vName of [
-  'X_OAUTH_CONSUMER_KEY',
-  'X_OAUTH_CONSUMER_SECRET',
-  'X_OAUTH_ACCESS_TOKEN',
-  'X_OAUTH_ACCESS_TOKEN_SECRET',
+  'X_OAUTH2_CLIENT_ID',
+  'X_OAUTH2_CLIENT_SECRET',
+  'X_OAUTH2_REFRESH_TOKEN',
 ]) {
   assert.ok(agyMcpRaw.includes(vName), `mcp_config.json must expose ${vName}`);
   assert.ok(cursorRaw.includes(vName), `.cursor-plugin/plugin.json must expose ${vName}`);

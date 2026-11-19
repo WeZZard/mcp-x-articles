@@ -14,21 +14,17 @@
   "variables": {
     "type": "object",
     "properties": {
-      "X_OAUTH_CONSUMER_KEY": {
+      "X_OAUTH2_CLIENT_ID": {
         "type": "string",
-        "description": "X API Key (Consumer Key) under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
+        "description": "X OAuth 2.0 Client ID under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens."
       },
-      "X_OAUTH_CONSUMER_SECRET": {
+      "X_OAUTH2_CLIENT_SECRET": {
         "type": "string",
-        "description": "X API Key Secret (Consumer Secret) under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
+        "description": "Optional X OAuth 2.0 Client Secret under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens (for confidential clients)."
       },
-      "X_OAUTH_ACCESS_TOKEN": {
+      "X_OAUTH2_REFRESH_TOKEN": {
         "type": "string",
-        "description": "Optional X Access Token under 'Authentication Tokens' in https://console.x.com (leave blank to authorize in browser)."
-      },
-      "X_OAUTH_ACCESS_TOKEN_SECRET": {
-        "type": "string",
-        "description": "Optional X Access Token Secret under 'Authentication Tokens' in https://console.x.com (leave blank to authorize in browser)."
+        "description": "Optional long-term OAuth 2.0 Refresh Token from 'OAuth 2.0 Keys -> Access Token -> Generate' in https://console.x.com (leave blank to authorize via browser PKCE)."
       }
     }
   },
@@ -39,10 +35,9 @@
         "${CURSOR_PLUGIN_ROOT}/dist/server.mjs"
       ],
       "env": {
-        "X_OAUTH_CONSUMER_KEY": "${X_OAUTH_CONSUMER_KEY}",
-        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}",
-        "X_OAUTH_ACCESS_TOKEN": "${X_OAUTH_ACCESS_TOKEN}",
-        "X_OAUTH_ACCESS_TOKEN_SECRET": "${X_OAUTH_ACCESS_TOKEN_SECRET}"
+        "X_OAUTH2_CLIENT_ID": "${X_OAUTH2_CLIENT_ID}",
+        "X_OAUTH2_CLIENT_SECRET": "${X_OAUTH2_CLIENT_SECRET}",
+        "X_OAUTH2_REFRESH_TOKEN": "${X_OAUTH2_REFRESH_TOKEN}"
       }
     }
   }

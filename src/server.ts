@@ -9,7 +9,11 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { convertMarkdownFile, type MediaMap } from './converter.js';
-import { detectHostConfigUi, loadConsumerCredentials, loadUserOAuthTokens } from './keychain.js';
+import {
+  detectHostConfigUi,
+  loadOAuth2ClientCredentials,
+  loadOAuth2UserTokens,
+} from './keychain.js';
 import {
   computePreflightToken,
   resolveCoverImagePath,
@@ -19,6 +23,7 @@ import { isRemoteUrl, scanSensitiveFile } from './scanner.js';
 import {
   createXArticleDraft,
   ensureAuthenticatedSession,
+  guessMediaCategory,
   guessMediaType,
   loadImageBytes,
   publishXArticle,
@@ -47,14 +52,14 @@ const TOOLS = [
     name: 'x_article_auth_status',
     title: 'Check or Setup X Articles Authentication',
     description:
-      'Check X OAuth 1.0a consumer credential resolution (Environment Variables -> macOS Keychain -> 0600 XDG config) and cached user token validity (`GET /2/users/me`). Set `login: true` to launch localhost browser OAuth 1.0a consent when no valid user token is cached.',
+      'Check X OAuth 2.0 client credential resolution (Environment Variables -> macOS Keychain -> 0600 XDG config), proactively refresh rotating offline.access tokens, and verify user token validity (`GET /2/users/me`). Set `login: true` to launch localhost OAuth 2.0 PKCE browser consent when no valid user token is available.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         login: {
           type: 'boolean',
           description:
-            'When true, launches the localhost OAuth 1.0a browser consent flow if no valid user token is cached.',
+            'When true, launches the localhost OAuth 2.0 PKCE browser consent flow if no valid user token is cached.',
         },
         verify: {
           type: 'boolean',
@@ -274,14 +279,19 @@ export function createMcpServer(): Server {
         const verify = args.verify !== false;
         const hostUi = detectHostConfigUi();
 
-        const { credentials, source: credentialSource } = loadConsumerCredentials();
+        const { credentials, source: credentialSource } = loadOAuth2ClientCredentials();
         if (!credentials) {
           // Never open the localhost /setup web form when the host agent has a native plugin configuration UI.
           if (hostUi.hasNativeConfigUi || !login) {
             return jsonToolResult({
+              auth_mode: 'oauth2',
               configured: false,
               credential_source: 'none',
               token_cached: false,
+              has_refresh_token: false,
+              access_token_expires_at: null,
+              scopes: null,
+              refreshed: false,
               has_native_config_ui: hostUi.hasNativeConfigUi,
               native_config_ui_url: hostUi.configUiUrl,
               setup_hint: hostUi.setupInstruction,
@@ -290,18 +300,23 @@ export function createMcpServer(): Server {
         }
 
         if (credentials) {
-          const cached = loadUserOAuthTokens(credentials.consumerKey);
+          const cached = loadOAuth2UserTokens(credentials.clientId);
           if (!cached.tokens && !login) {
             return jsonToolResult({
+              auth_mode: 'oauth2',
               configured: true,
               credential_source: credentialSource,
               token_cached: false,
               token_source: 'none',
+              has_refresh_token: false,
+              access_token_expires_at: null,
+              scopes: null,
+              refreshed: false,
               has_native_config_ui: hostUi.hasNativeConfigUi,
               native_config_ui_url: hostUi.configUiUrl,
               setup_hint: hostUi.hasNativeConfigUi
-                ? `Consumer credentials found (${credentialSource}), but no user OAuth 1.0a Access Token is configured yet. Either configure X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser.`
-                : 'Consumer credentials found, but no user OAuth 1.0a token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser.',
+                ? `OAuth 2.0 Client ID found (${credentialSource}), but no user Refresh Token or Access Token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser.`
+                : 'OAuth 2.0 Client ID found, but no user OAuth 2.0 token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser.',
             });
           }
         }
@@ -312,10 +327,17 @@ export function createMcpServer(): Server {
         });
 
         return jsonToolResult({
+          auth_mode: 'oauth2',
           configured: true,
           credential_source: session.credentialSource,
           token_cached: true,
           token_source: session.tokenSource,
+          has_refresh_token: Boolean(session.refreshToken),
+          access_token_expires_at: session.expiresAt
+            ? new Date(session.expiresAt * 1000).toISOString()
+            : null,
+          scopes: session.scope ?? null,
+          refreshed: Boolean(session.refreshed),
           has_native_config_ui: hostUi.hasNativeConfigUi,
           native_config_ui_url: hostUi.configUiUrl,
           verified: verify,
@@ -473,8 +495,8 @@ export function createMcpServer(): Server {
           const up = await uploadMediaBuffer({
             bytes: loaded.bytes,
             mediaType: loaded.mediaType,
-            mediaCategory: 'tweet_image',
-            signingCreds: session.signingCreds,
+            mediaCategory: guessMediaCategory(loaded.mediaType),
+            session,
             label: src,
           });
           mediaMap[src] = {
@@ -495,7 +517,7 @@ export function createMcpServer(): Server {
             bytes: loadedCover.bytes,
             mediaType: loadedCover.mediaType,
             mediaCategory: 'tweet_image',
-            signingCreds: session.signingCreds,
+            session,
             label: 'cover_image',
           });
           coverMediaId = upCover.media_id;
@@ -511,7 +533,7 @@ export function createMcpServer(): Server {
           contentState: finalConversion.content_state,
           coverMediaId,
           coverMediaCategory: 'tweet_image',
-          signingCreds: session.signingCreds,
+          session,
         });
 
         return jsonToolResult({
@@ -540,7 +562,7 @@ export function createMcpServer(): Server {
 
         const published = await publishXArticle({
           articleId,
-          signingCreds: session.signingCreds,
+          session,
           usernameHint: session.user?.username,
         });
 

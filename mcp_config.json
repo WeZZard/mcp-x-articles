@@ -7,31 +7,25 @@
       ],
       "cwd": ".",
       "env": {
-        "X_OAUTH_CONSUMER_KEY": "${X_OAUTH_CONSUMER_KEY}",
-        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}",
-        "X_OAUTH_ACCESS_TOKEN": "${X_OAUTH_ACCESS_TOKEN}",
-        "X_OAUTH_ACCESS_TOKEN_SECRET": "${X_OAUTH_ACCESS_TOKEN_SECRET}"
+        "X_OAUTH2_CLIENT_ID": "${X_OAUTH2_CLIENT_ID}",
+        "X_OAUTH2_CLIENT_SECRET": "${X_OAUTH2_CLIENT_SECRET}",
+        "X_OAUTH2_REFRESH_TOKEN": "${X_OAUTH2_REFRESH_TOKEN}"
       },
       "variables": [
         {
-          "name": "X_OAUTH_CONSUMER_KEY",
-          "title": "X API Key (Consumer Key)",
-          "description": "API Key under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
+          "name": "X_OAUTH2_CLIENT_ID",
+          "title": "X OAuth 2.0 Client ID",
+          "description": "Client ID under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens."
         },
         {
-          "name": "X_OAUTH_CONSUMER_SECRET",
-          "title": "X API Key Secret (Consumer Secret)",
-          "description": "API Key Secret under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
+          "name": "X_OAUTH2_CLIENT_SECRET",
+          "title": "X OAuth 2.0 Client Secret (Optional for public clients)",
+          "description": "Client Secret under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens (optional for public PKCE clients)."
         },
         {
-          "name": "X_OAUTH_ACCESS_TOKEN",
-          "title": "X Access Token (Optional — leave blank to authorize in browser)",
-          "description": "Access Token with Read and Write permissions under 'Authentication Tokens' in https://console.x.com -> Apps -> Keys and tokens."
-        },
-        {
-          "name": "X_OAUTH_ACCESS_TOKEN_SECRET",
-          "title": "X Access Token Secret (Optional — leave blank to authorize in browser)",
-          "description": "Access Token Secret with Read and Write permissions under 'Authentication Tokens' in https://console.x.com -> Apps -> Keys and tokens."
+          "name": "X_OAUTH2_REFRESH_TOKEN",
+          "title": "X OAuth 2.0 Refresh Token (Optional — paste from Console 'Generate', or leave blank for browser PKCE login)",
+          "description": "Optional long-term OAuth 2.0 Refresh Token from 'OAuth 2.0 Keys -> Access Token -> Generate' in https://console.x.com (recommended for zero-callback long-term auth, or leave blank to authorize via browser PKCE)."
         }
       ]
     }

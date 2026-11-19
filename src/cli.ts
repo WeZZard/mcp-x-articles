@@ -2,25 +2,34 @@ import { realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import {
-  clearConsumerCredentials,
-  clearUserOAuthTokens,
+  clearOAuth2ClientCredentials,
+  clearOAuth2UserTokens,
+  clientKeyId,
   configDirPath,
-  consumerKeyId,
   DEFAULT_KEYCHAIN_SERVICE,
   detectHostConfigUi,
   keychainServiceName,
-  loadConsumerCredentials,
-  loadUserOAuthTokens,
-  saveConsumerCredentials,
-  saveUserOAuthTokens,
+  loadOAuth2ClientCredentials,
+  loadOAuth2UserTokens,
+  saveOAuth2ClientCredentials,
+  saveOAuth2UserTokens,
+  sha256Hex,
+  withOAuth2RefreshLock,
 } from './keychain.js';
 import {
-  rfc3986Encode,
-  runInteractiveSetupAndOAuth1Flow,
-  signOAuth1Header,
-} from './oauth1.js';
+  buildOAuth2AuthorizeUrl,
+  DEFAULT_OAUTH2_SCOPES,
+  exchangeAuthorizationCode,
+  generatePkcePair,
+  getOAuth2AuthorizeUrl,
+  getOAuth2Scopes,
+  getOAuth2TokenUrl,
+  OAuth2TokenError,
+  refreshOAuth2Token,
+  runInteractiveSetupAndOAuth2Flow,
+} from './oauth2.js';
 import { PACKAGE_NAME, PACKAGE_VERSION, runStdioMcpServer } from './server.js';
-import { ensureAuthenticatedSession } from './x-api.js';
+import { ensureAuthenticatedSession, guessMediaCategory, guessMediaType } from './x-api.js';
 
 export {
   convertMarkdownFile,
@@ -30,19 +39,33 @@ export {
   type MediaMap,
 } from './converter.js';
 export {
-  clearConsumerCredentials,
-  clearUserOAuthTokens,
+  clearOAuth2ClientCredentials,
+  clearOAuth2UserTokens,
+  clientKeyId,
   configDirPath,
-  consumerKeyId,
   DEFAULT_KEYCHAIN_SERVICE,
   detectHostConfigUi,
   keychainServiceName,
-  loadConsumerCredentials,
-  loadUserOAuthTokens,
-  saveConsumerCredentials,
-  saveUserOAuthTokens,
+  loadOAuth2ClientCredentials,
+  loadOAuth2UserTokens,
+  saveOAuth2ClientCredentials,
+  saveOAuth2UserTokens,
+  sha256Hex,
+  withOAuth2RefreshLock,
 };
-export { rfc3986Encode, runInteractiveSetupAndOAuth1Flow, signOAuth1Header };
+export {
+  buildOAuth2AuthorizeUrl,
+  DEFAULT_OAUTH2_SCOPES,
+  exchangeAuthorizationCode,
+  generatePkcePair,
+  getOAuth2AuthorizeUrl,
+  getOAuth2Scopes,
+  getOAuth2TokenUrl,
+  OAuth2TokenError,
+  refreshOAuth2Token,
+  runInteractiveSetupAndOAuth2Flow,
+};
+export { ensureAuthenticatedSession, guessMediaCategory, guessMediaType };
 export {
   computePreflightToken,
   resolveCoverImagePath,
@@ -58,8 +81,8 @@ function printHelp(): void {
       '',
       'Usage:',
       '  mcp-x-articles            Start the MCP server over stdio (default)',
-      '  mcp-x-articles auth       Configure X OAuth 1.0a keys in macOS Keychain and authorize in browser',
-      '  mcp-x-articles status     Show current credential and OAuth token status',
+      '  mcp-x-articles auth       Configure X OAuth 2.0 keys in macOS Keychain and authorize in browser',
+      '  mcp-x-articles status     Show current OAuth 2.0 credential and token status',
       '  mcp-x-articles --version  Print package version',
       '  mcp-x-articles --help     Print this help message',
       '',
@@ -68,40 +91,65 @@ function printHelp(): void {
 }
 
 async function runAuthCli(resetKeys: boolean): Promise<void> {
-  let { credentials, source } = loadConsumerCredentials();
+  let { credentials, source } = loadOAuth2ClientCredentials();
+  let cliRefreshToken = '';
 
   if (!credentials || resetKeys) {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
     try {
       process.stderr.write(
-        'Optional: register http://127.0.0.1:8976/oauth/callback in https://console.x.com for 1-click redirect (otherwise automatic PIN mode is used).\n\n',
+        'For browser PKCE login, register http://127.0.0.1:8976/oauth/callback in https://console.x.com.\n' +
+          'Or click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token below.\n\n',
       );
-      const consumerKey = (await rl.question('X OAuth Consumer Key (API Key): ')).trim();
-      const consumerSecret = (await rl.question('X OAuth Consumer Secret (API Key Secret): ')).trim();
+      const clientId = (await rl.question('X OAuth 2.0 Client ID: ')).trim();
+      const clientSecret =
+        (await rl.question('X OAuth 2.0 Client Secret (optional for public clients): ')).trim() ||
+        undefined;
+      cliRefreshToken = (
+        await rl.question('X OAuth 2.0 Refresh Token (leave blank for browser PKCE login): ')
+      ).trim();
 
-      if (!consumerKey || !consumerSecret) {
-        throw new Error('Consumer Key and Consumer Secret are both required.');
+      if (!clientId) {
+        throw new Error('X OAuth 2.0 Client ID is required.');
       }
 
-      source = saveConsumerCredentials({ consumerKey, consumerSecret });
-      credentials = { consumerKey, consumerSecret };
-      process.stderr.write(`Saved consumer credentials to ${source}.\n`);
+      source = saveOAuth2ClientCredentials({
+        clientId,
+        ...(clientSecret ? { clientSecret } : {}),
+      });
+      credentials = {
+        clientId,
+        ...(clientSecret ? { clientSecret } : {}),
+      };
+      process.stderr.write(`Saved OAuth 2.0 client credentials to ${source}.\n`);
     } finally {
       rl.close();
     }
   } else {
-    process.stderr.write(`Using existing consumer credentials from ${source}.\n`);
+    process.stderr.write(`Using existing OAuth 2.0 client credentials from ${source}.\n`);
   }
 
-  const interactive = await runInteractiveSetupAndOAuth1Flow({
-    existingCredentials: credentials,
-    existingCredentialSource: source,
-  });
-  const tokenStore = saveUserOAuthTokens(
-    interactive.credentials.consumerKey,
-    interactive.accessToken,
-    interactive.accessSecret,
-  );
+  let tokenStore = source;
+  if (cliRefreshToken) {
+    const refreshed = await refreshOAuth2Token({
+      credentials,
+      refreshToken: cliRefreshToken,
+    });
+    tokenStore = saveOAuth2UserTokens(credentials.clientId, {
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken ?? cliRefreshToken,
+      expiresAt: refreshed.expiresAt,
+      scope: refreshed.scope,
+      seedRefreshTokenHash: sha256Hex(cliRefreshToken),
+    });
+  } else {
+    const interactive = await runInteractiveSetupAndOAuth2Flow({
+      existingCredentials: credentials,
+      existingCredentialSource: source,
+    });
+    tokenStore = interactive.tokenSource;
+  }
+
   const verified = await ensureAuthenticatedSession({
     allowInteractiveLogin: false,
     verifyProbe: true,
@@ -109,19 +157,23 @@ async function runAuthCli(resetKeys: boolean): Promise<void> {
 
   const handle = verified.user?.username ? `@${verified.user.username}` : 'authenticated account';
   process.stdout.write(
-    `Authenticated ${handle} successfully (credentials: ${verified.credentialSource}, user token: ${tokenStore}).\n`,
+    `Authenticated ${handle} via OAuth 2.0 successfully (credentials: ${verified.credentialSource}, user token: ${tokenStore}, refresh_token: ${Boolean(verified.refreshToken)}).\n`,
   );
 }
 
 async function runStatusCli(): Promise<void> {
-  const { credentials, source } = loadConsumerCredentials();
+  const { credentials, source } = loadOAuth2ClientCredentials();
   if (!credentials) {
     process.stdout.write(
       JSON.stringify(
         {
+          auth_mode: 'oauth2',
           configured: false,
           credential_source: 'none',
           token_cached: false,
+          has_refresh_token: false,
+          access_token_expires_at: null,
+          scopes: null,
           hint: 'Call x_article_auth_status({ login: true }) in your agent or run `npx @wezzard/mcp-x-articles auth`.',
         },
         null,
@@ -130,14 +182,20 @@ async function runStatusCli(): Promise<void> {
     );
     return;
   }
-  const tok = loadUserOAuthTokens(credentials.consumerKey);
+  const tok = loadOAuth2UserTokens(credentials.clientId);
   process.stdout.write(
     JSON.stringify(
       {
+        auth_mode: 'oauth2',
         configured: true,
         credential_source: source,
         token_cached: Boolean(tok.tokens),
         token_source: tok.source,
+        has_refresh_token: Boolean(tok.tokens?.refreshToken),
+        access_token_expires_at: tok.tokens?.expiresAt
+          ? new Date(tok.tokens.expiresAt * 1000).toISOString()
+          : null,
+        scopes: tok.tokens?.scope ?? null,
       },
       null,
       2,

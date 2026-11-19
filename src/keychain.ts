@@ -1,31 +1,47 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export const DEFAULT_KEYCHAIN_SERVICE = '@wezzard/mcp-x-articles';
-const CONSUMER_ACCOUNT = 'consumer_credentials';
+const CLIENT_ACCOUNT = 'oauth2_client_credentials';
+const REFRESH_LOCK_STALE_MS = 30_000;
+const REFRESH_LOCK_TIMEOUT_MS = 15_000;
+const REFRESH_LOCK_POLL_MS = 50;
 
 export function keychainServiceName(): string {
   return (process.env.MCP_X_ARTICLES_KEYCHAIN_SERVICE ?? '').trim() || DEFAULT_KEYCHAIN_SERVICE;
 }
 
-export interface ConsumerCredentials {
-  consumerKey: string;
-  consumerSecret: string;
+export interface OAuth2ClientCredentials {
+  clientId: string;
+  clientSecret?: string;
 }
 
-export interface UserOAuthTokens {
+export interface OAuth2UserTokens {
   accessToken: string;
-  accessSecret: string;
+  refreshToken?: string;
+  expiresAt: number;
+  scope?: string;
   savedAt: number;
+  seedRefreshTokenHash?: string;
 }
 
 export type CredentialSource = 'env' | 'macos-keychain' | 'xdg-config' | 'none';
 
-export interface ResolvedCredentials {
-  credentials: ConsumerCredentials | null;
+export interface ResolvedOAuth2ClientCredentials {
+  credentials: OAuth2ClientCredentials | null;
   source: CredentialSource;
 }
 
@@ -54,7 +70,7 @@ export function detectHostConfigUi(): HostConfigUiInfo {
       hasNativeConfigUi: true,
       hostName: 'antigravity',
       configUiUrl,
-      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH_CONSUMER_KEY and X_OAUTH_CONSUMER_SECRET (and optionally X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET).`,
+      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate).`,
     };
   }
 
@@ -64,7 +80,7 @@ export function detectHostConfigUi(): HostConfigUiInfo {
       hostName: 'cursor',
       configUiUrl: null,
       setupInstruction:
-        "Open Cursor's MCP plugin settings UI and configure X_OAUTH_CONSUMER_KEY and X_OAUTH_CONSUMER_SECRET (and optionally X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET).",
+        "Open Cursor's MCP plugin settings UI and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate).",
     };
   }
 
@@ -73,7 +89,7 @@ export function detectHostConfigUi(): HostConfigUiInfo {
     hostName: 'none',
     configUiUrl: null,
     setupInstruction:
-      'Call `x_article_auth_status({ login: true })` to open the local browser setup form (saves API Key and Secret directly to macOS Keychain and completes X OAuth), or run `npx @wezzard/mcp-x-articles auth` in a terminal.',
+      'Call `x_article_auth_status({ login: true })` to open the local browser setup form (saves OAuth 2.0 Client ID/Secret directly to macOS Keychain and completes X OAuth 2.0 PKCE with offline.access), or run `npx @wezzard/mcp-x-articles auth` in a terminal.',
   };
 }
 
@@ -83,22 +99,30 @@ function cleanEnvValue(raw: string | undefined): string {
   return val;
 }
 
+export function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+export function clientKeyId(clientId: string): string {
+  return sha256Hex(clientId).slice(0, 16);
+}
+
 export function configDirPath(): string {
   const xdg = (process.env.XDG_CONFIG_HOME ?? '').trim();
   const base = xdg ? xdg : join(homedir(), '.config');
   return join(base, 'mcp-x-articles');
 }
 
-function credentialsFilePath(): string {
-  return join(configDirPath(), 'credentials.json');
+function clientCredentialsFilePath(): string {
+  return join(configDirPath(), 'oauth2_client.json');
 }
 
 function tokensFilePath(): string {
-  return join(configDirPath(), 'oauth1_tokens.json');
+  return join(configDirPath(), 'oauth2_tokens.json');
 }
 
-export function consumerKeyId(consumerKey: string): string {
-  return createHash('sha256').update(consumerKey, 'utf8').digest('hex').slice(0, 16);
+function refreshLockFilePath(): string {
+  return join(configDirPath(), 'oauth2_refresh.lock');
 }
 
 function isMacKeychainAvailable(): boolean {
@@ -149,14 +173,6 @@ function keychainDelete(account: string): void {
   }
 }
 
-export function clearConsumerCredentials(): void {
-  keychainDelete(CONSUMER_ACCOUNT);
-  const file = credentialsFilePath();
-  if (existsSync(file)) {
-    writeAtomic0600(file, {});
-  }
-}
-
 function writeAtomic0600(filePath: string, data: unknown): void {
   const dir = configDirPath();
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -179,21 +195,34 @@ function readJsonSafe<T>(filePath: string): T | null {
   }
 }
 
-export function loadConsumerCredentials(): ResolvedCredentials {
-  const envKey = cleanEnvValue(process.env.X_OAUTH_CONSUMER_KEY);
-  const envSecret = cleanEnvValue(process.env.X_OAUTH_CONSUMER_SECRET);
-  if (envKey && envSecret) {
+export function clearOAuth2ClientCredentials(): void {
+  keychainDelete(CLIENT_ACCOUNT);
+  const file = clientCredentialsFilePath();
+  if (existsSync(file)) {
+    writeAtomic0600(file, {});
+  }
+}
+
+export function loadOAuth2ClientCredentials(): ResolvedOAuth2ClientCredentials {
+  const envId =
+    cleanEnvValue(process.env.X_OAUTH2_CLIENT_ID) || cleanEnvValue(process.env.X_CLIENT_ID);
+  const envSecret =
+    cleanEnvValue(process.env.X_OAUTH2_CLIENT_SECRET) ||
+    cleanEnvValue(process.env.X_CLIENT_SECRET) ||
+    undefined;
+
+  if (envId) {
     return {
       credentials: {
-        consumerKey: envKey,
-        consumerSecret: envSecret,
+        clientId: envId,
+        ...(envSecret ? { clientSecret: envSecret } : {}),
       },
       source: 'env',
     };
   }
 
   // When running inside a host agent that provides a native MCP plugin configuration UI
-  // (e.g. Antigravity or Cursor), consumer credentials must be configured through that UI
+  // (e.g. Antigravity or Cursor), client credentials must be configured through that UI
   // rather than falling back to a separate Keychain/XDG entry.
   if (
     detectHostConfigUi().hasNativeConfigUi &&
@@ -202,15 +231,15 @@ export function loadConsumerCredentials(): ResolvedCredentials {
     return { credentials: null, source: 'none' };
   }
 
-  const kcRaw = keychainRead(CONSUMER_ACCOUNT);
+  const kcRaw = keychainRead(CLIENT_ACCOUNT);
   if (kcRaw) {
     try {
-      const parsed = JSON.parse(kcRaw) as Partial<ConsumerCredentials>;
-      if (parsed.consumerKey && parsed.consumerSecret) {
+      const parsed = JSON.parse(kcRaw) as Partial<OAuth2ClientCredentials>;
+      if (parsed.clientId) {
         return {
           credentials: {
-            consumerKey: parsed.consumerKey,
-            consumerSecret: parsed.consumerSecret,
+            clientId: parsed.clientId,
+            ...(parsed.clientSecret ? { clientSecret: parsed.clientSecret } : {}),
           },
           source: 'macos-keychain',
         };
@@ -220,12 +249,12 @@ export function loadConsumerCredentials(): ResolvedCredentials {
     }
   }
 
-  const fileCreds = readJsonSafe<Partial<ConsumerCredentials>>(credentialsFilePath());
-  if (fileCreds?.consumerKey && fileCreds?.consumerSecret) {
+  const fileCreds = readJsonSafe<Partial<OAuth2ClientCredentials>>(clientCredentialsFilePath());
+  if (fileCreds?.clientId) {
     return {
       credentials: {
-        consumerKey: fileCreds.consumerKey,
-        consumerSecret: fileCreds.consumerSecret,
+        clientId: fileCreds.clientId,
+        ...(fileCreds.clientSecret ? { clientSecret: fileCreds.clientSecret } : {}),
       },
       source: 'xdg-config',
     };
@@ -234,43 +263,40 @@ export function loadConsumerCredentials(): ResolvedCredentials {
   return { credentials: null, source: 'none' };
 }
 
-export function saveConsumerCredentials(creds: ConsumerCredentials): CredentialSource {
-  const payload: ConsumerCredentials = {
-    consumerKey: creds.consumerKey.trim(),
-    consumerSecret: creds.consumerSecret.trim(),
+export function saveOAuth2ClientCredentials(creds: OAuth2ClientCredentials): CredentialSource {
+  const trimmedSecret = (creds.clientSecret ?? '').trim();
+  const payload: OAuth2ClientCredentials = {
+    clientId: creds.clientId.trim(),
+    ...(trimmedSecret ? { clientSecret: trimmedSecret } : {}),
   };
-  if (keychainWrite(CONSUMER_ACCOUNT, JSON.stringify(payload))) {
+  if (keychainWrite(CLIENT_ACCOUNT, JSON.stringify(payload))) {
     return 'macos-keychain';
   }
-  writeAtomic0600(credentialsFilePath(), payload);
+  writeAtomic0600(clientCredentialsFilePath(), payload);
   return 'xdg-config';
 }
 
-export function loadUserOAuthTokens(consumerKey: string): {
-  tokens: UserOAuthTokens | null;
+function readStoredOAuth2UserTokens(clientId: string): {
+  tokens: OAuth2UserTokens | null;
   source: CredentialSource;
 } {
-  const envTok = cleanEnvValue(process.env.X_OAUTH_ACCESS_TOKEN);
-  const envSec = cleanEnvValue(process.env.X_OAUTH_ACCESS_TOKEN_SECRET);
-  if (envTok && envSec) {
-    return {
-      tokens: { accessToken: envTok, accessSecret: envSec, savedAt: 0 },
-      source: 'env',
-    };
-  }
-
-  const keyId = consumerKeyId(consumerKey);
-  const kcAccount = `oauth1_user_token:${keyId}`;
+  const keyId = clientKeyId(clientId);
+  const kcAccount = `oauth2_user_token:${keyId}`;
   const kcRaw = keychainRead(kcAccount);
   if (kcRaw) {
     try {
-      const parsed = JSON.parse(kcRaw) as Partial<UserOAuthTokens>;
-      if (parsed.accessToken && parsed.accessSecret) {
+      const parsed = JSON.parse(kcRaw) as Partial<OAuth2UserTokens>;
+      if (parsed.accessToken || parsed.refreshToken) {
         return {
           tokens: {
-            accessToken: parsed.accessToken,
-            accessSecret: parsed.accessSecret,
-            savedAt: parsed.savedAt ?? 0,
+            accessToken: parsed.accessToken ?? '',
+            ...(parsed.refreshToken ? { refreshToken: parsed.refreshToken } : {}),
+            expiresAt: Number(parsed.expiresAt ?? 0),
+            ...(parsed.scope ? { scope: parsed.scope } : {}),
+            savedAt: Number(parsed.savedAt ?? 0),
+            ...(parsed.seedRefreshTokenHash
+              ? { seedRefreshTokenHash: parsed.seedRefreshTokenHash }
+              : {}),
           },
           source: 'macos-keychain',
         };
@@ -280,14 +306,17 @@ export function loadUserOAuthTokens(consumerKey: string): {
     }
   }
 
-  const map = readJsonSafe<Record<string, Partial<UserOAuthTokens>>>(tokensFilePath());
+  const map = readJsonSafe<Record<string, Partial<OAuth2UserTokens>>>(tokensFilePath());
   const entry = map?.[keyId];
-  if (entry?.accessToken && entry?.accessSecret) {
+  if (entry && (entry.accessToken || entry.refreshToken)) {
     return {
       tokens: {
-        accessToken: entry.accessToken,
-        accessSecret: entry.accessSecret,
-        savedAt: entry.savedAt ?? 0,
+        accessToken: entry.accessToken ?? '',
+        ...(entry.refreshToken ? { refreshToken: entry.refreshToken } : {}),
+        expiresAt: Number(entry.expiresAt ?? 0),
+        ...(entry.scope ? { scope: entry.scope } : {}),
+        savedAt: Number(entry.savedAt ?? 0),
+        ...(entry.seedRefreshTokenHash ? { seedRefreshTokenHash: entry.seedRefreshTokenHash } : {}),
       },
       source: 'xdg-config',
     };
@@ -296,35 +325,126 @@ export function loadUserOAuthTokens(consumerKey: string): {
   return { tokens: null, source: 'none' };
 }
 
-export function saveUserOAuthTokens(
-  consumerKey: string,
-  accessToken: string,
-  accessSecret: string,
+export function loadOAuth2UserTokens(clientId: string): {
+  tokens: OAuth2UserTokens | null;
+  source: CredentialSource;
+} {
+  const stored = readStoredOAuth2UserTokens(clientId);
+  const envRefresh = cleanEnvValue(process.env.X_OAUTH2_REFRESH_TOKEN);
+  const envAccess = cleanEnvValue(process.env.X_OAUTH2_ACCESS_TOKEN);
+  const now = Math.floor(Date.now() / 1000);
+
+  if (envRefresh) {
+    const envSeedHash = sha256Hex(envRefresh);
+    if (stored.tokens && stored.tokens.seedRefreshTokenHash === envSeedHash) {
+      return stored;
+    }
+    return {
+      tokens: {
+        accessToken: envAccess || '',
+        refreshToken: envRefresh,
+        expiresAt: envAccess ? now + 300 : 0,
+        savedAt: 0,
+        seedRefreshTokenHash: envSeedHash,
+      },
+      source: 'env',
+    };
+  }
+
+  if (envAccess) {
+    if (stored.tokens?.refreshToken && stored.tokens.accessToken) {
+      return stored;
+    }
+    return {
+      tokens: {
+        accessToken: envAccess,
+        expiresAt: now + 3600,
+        savedAt: 0,
+      },
+      source: 'env',
+    };
+  }
+
+  return stored;
+}
+
+export function saveOAuth2UserTokens(
+  clientId: string,
+  tokens: Omit<OAuth2UserTokens, 'savedAt'> & { savedAt?: number },
 ): CredentialSource {
-  const keyId = consumerKeyId(consumerKey);
-  const record: UserOAuthTokens = {
-    accessToken: accessToken.trim(),
-    accessSecret: accessSecret.trim(),
-    savedAt: Math.floor(Date.now() / 1000),
+  const keyId = clientKeyId(clientId);
+  const record: OAuth2UserTokens = {
+    accessToken: tokens.accessToken.trim(),
+    ...(tokens.refreshToken?.trim() ? { refreshToken: tokens.refreshToken.trim() } : {}),
+    expiresAt: Math.floor(Number(tokens.expiresAt || 0)),
+    ...(tokens.scope?.trim() ? { scope: tokens.scope.trim() } : {}),
+    savedAt: tokens.savedAt ?? Math.floor(Date.now() / 1000),
+    ...(tokens.seedRefreshTokenHash?.trim()
+      ? { seedRefreshTokenHash: tokens.seedRefreshTokenHash.trim() }
+      : {}),
   };
 
-  if (keychainWrite(`oauth1_user_token:${keyId}`, JSON.stringify(record))) {
+  if (keychainWrite(`oauth2_user_token:${keyId}`, JSON.stringify(record))) {
     return 'macos-keychain';
   }
 
-  const existing = readJsonSafe<Record<string, UserOAuthTokens>>(tokensFilePath()) ?? {};
+  const existing = readJsonSafe<Record<string, OAuth2UserTokens>>(tokensFilePath()) ?? {};
   existing[keyId] = record;
   writeAtomic0600(tokensFilePath(), existing);
   return 'xdg-config';
 }
 
-export function clearUserOAuthTokens(consumerKey: string): void {
-  const keyId = consumerKeyId(consumerKey);
-  keychainDelete(`oauth1_user_token:${keyId}`);
+export function clearOAuth2UserTokens(clientId: string): void {
+  const keyId = clientKeyId(clientId);
+  keychainDelete(`oauth2_user_token:${keyId}`);
   const file = tokensFilePath();
-  const existing = readJsonSafe<Record<string, UserOAuthTokens>>(file);
+  const existing = readJsonSafe<Record<string, OAuth2UserTokens>>(file);
   if (existing && keyId in existing) {
     delete existing[keyId];
     writeAtomic0600(file, existing);
+  }
+}
+
+export async function withOAuth2RefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  const dir = configDirPath();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lockPath = refreshLockFilePath();
+  const deadline = Date.now() + REFRESH_LOCK_TIMEOUT_MS;
+
+  while (true) {
+    try {
+      const fd = openSync(lockPath, 'wx', 0o600);
+      try {
+        writeFileSync(fd, `${process.pid}\n`, 'utf8');
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        return await fn();
+      } finally {
+        rmSync(lockPath, { force: true });
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'EEXIST') {
+        throw err;
+      }
+
+      try {
+        const st = statSync(lockPath);
+        if (Date.now() - st.mtimeMs > REFRESH_LOCK_STALE_MS) {
+          rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        // Lock was released between openSync and statSync; retry immediately.
+        continue;
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for OAuth 2.0 refresh lock at ${lockPath}.`);
+      }
+      await new Promise((r) => setTimeout(r, REFRESH_LOCK_POLL_MS));
+    }
   }
 }

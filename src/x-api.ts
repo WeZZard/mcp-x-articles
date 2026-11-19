@@ -2,22 +2,29 @@ import { readFileSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import type { ContentState } from './converter.js';
 import {
-  clearUserOAuthTokens,
+  clearOAuth2UserTokens,
   detectHostConfigUi,
-  loadConsumerCredentials,
-  loadUserOAuthTokens,
-  saveUserOAuthTokens,
-  type ConsumerCredentials,
+  loadOAuth2ClientCredentials,
+  loadOAuth2UserTokens,
+  saveOAuth2UserTokens,
+  sha256Hex,
+  withOAuth2RefreshLock,
   type CredentialSource,
+  type OAuth2ClientCredentials,
+  type OAuth2UserTokens,
 } from './keychain.js';
 import {
-  runInteractiveSetupAndOAuth1Flow,
-  signOAuth1Header,
-  type OAuth1SigningCredentials,
-} from './oauth1.js';
+  getApiBaseUrl,
+  OAuth2TokenError,
+  refreshOAuth2Token,
+  runInteractiveSetupAndOAuth2Flow,
+} from './oauth2.js';
 import { isRemoteUrl } from './scanner.js';
 
 const CHUNK_SIZE_BYTES = 2_500_000;
+const REFRESH_BUFFER_SECONDS = 300;
+
+export { getApiBaseUrl };
 
 export function guessMediaType(pathOrUrl: string): string {
   const clean = pathOrUrl.split('?')[0].split('#')[0];
@@ -38,27 +45,105 @@ export function guessMediaType(pathOrUrl: string): string {
   return mapping[ext] ?? 'image/png';
 }
 
-export function getApiBaseUrl(): string {
-  return (process.env.X_API_BASE_URL ?? 'https://api.x.com').trim().replace(/\/+$/, '');
+export function guessMediaCategory(mediaType: string): 'tweet_gif' | 'tweet_video' | 'tweet_image' {
+  const normalized = mediaType.trim().toLowerCase();
+  if (normalized === 'image/gif') return 'tweet_gif';
+  if (normalized.startsWith('video/')) return 'tweet_video';
+  return 'tweet_image';
 }
 
-async function signedJsonRequest<T = Record<string, unknown>>(options: {
+export interface AuthSession {
+  credentials: OAuth2ClientCredentials;
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+  scope?: string;
+  credentialSource: CredentialSource;
+  tokenSource: CredentialSource;
+  refreshed?: boolean;
+  seedRefreshTokenHash?: string;
+  user?: { id?: string; username?: string; name?: string };
+}
+
+function activeEnvRefreshSeedHash(): string | undefined {
+  const raw = (process.env.X_OAUTH2_REFRESH_TOKEN ?? '').trim();
+  if (!raw || raw.startsWith('${')) return undefined;
+  return sha256Hex(raw);
+}
+
+async function refreshSessionLocked(
+  credentials: OAuth2ClientCredentials,
+  staleTokens: OAuth2UserTokens,
+): Promise<{ tokens: OAuth2UserTokens; tokenSource: CredentialSource; refreshed: boolean }> {
+  return withOAuth2RefreshLock(async () => {
+    const latest = loadOAuth2UserTokens(credentials.clientId);
+    const now = Math.floor(Date.now() / 1000);
+
+    if (
+      latest.tokens &&
+      latest.tokens.accessToken &&
+      latest.tokens.accessToken !== staleTokens.accessToken &&
+      latest.tokens.expiresAt > now + REFRESH_BUFFER_SECONDS
+    ) {
+      return {
+        tokens: latest.tokens,
+        tokenSource: latest.source,
+        refreshed: false,
+      };
+    }
+
+    const refreshTokenToUse = latest.tokens?.refreshToken ?? staleTokens.refreshToken;
+    if (!refreshTokenToUse) {
+      throw new OAuth2TokenError('No OAuth 2.0 refresh token is available to refresh session.', 401);
+    }
+
+    const refreshed = await refreshOAuth2Token({
+      credentials,
+      refreshToken: refreshTokenToUse,
+    });
+
+    const nextRefreshToken = refreshed.refreshToken ?? refreshTokenToUse;
+    const nextScope = refreshed.scope ?? latest.tokens?.scope ?? staleTokens.scope;
+    const seedRefreshTokenHash =
+      latest.tokens?.seedRefreshTokenHash ?? staleTokens.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+
+    const savedAt = Math.floor(Date.now() / 1000);
+    const savedSource = saveOAuth2UserTokens(credentials.clientId, {
+      accessToken: refreshed.accessToken,
+      refreshToken: nextRefreshToken,
+      expiresAt: refreshed.expiresAt,
+      scope: nextScope,
+      savedAt,
+      seedRefreshTokenHash,
+    });
+
+    return {
+      tokens: {
+        accessToken: refreshed.accessToken,
+        refreshToken: nextRefreshToken,
+        expiresAt: refreshed.expiresAt,
+        ...(nextScope ? { scope: nextScope } : {}),
+        savedAt,
+        ...(seedRefreshTokenHash ? { seedRefreshTokenHash } : {}),
+      },
+      tokenSource: savedSource,
+      refreshed: true,
+    };
+  });
+}
+
+async function rawBearerJsonRequest<T = Record<string, unknown>>(options: {
   method: 'GET' | 'POST';
   pathWithQuery: string;
-  signingCreds: OAuth1SigningCredentials;
+  accessToken: string;
   jsonBody?: unknown;
-}): Promise<{ status: number; data: T }> {
+}): Promise<{ status: number; data: T; rawText: string }> {
   const url = `${getApiBaseUrl()}${options.pathWithQuery}`;
-  const authHeader = signOAuth1Header({
-    method: options.method,
-    url,
-    credentials: options.signingCreds,
-  });
-
   const headers: Record<string, string> = {
-    Authorization: authHeader,
+    Authorization: `Bearer ${options.accessToken}`,
     'X-B3-Flags': (process.env.X_B3_FLAGS ?? '1').trim() || '1',
   };
+
   let bodyStr: string | undefined;
   if (options.jsonBody !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -87,115 +172,268 @@ async function signedJsonRequest<T = Record<string, unknown>>(options: {
     );
   }
 
-  return { status: resp.status, data: parsed as T };
+  return { status: resp.status, data: parsed as T, rawText: text };
 }
 
-export interface AuthSession {
-  signingCreds: OAuth1SigningCredentials;
-  credentialSource: CredentialSource;
-  tokenSource: CredentialSource;
-  user?: { id?: string; username?: string; name?: string };
+async function authorizedJsonRequest<T = Record<string, unknown>>(options: {
+  method: 'GET' | 'POST';
+  pathWithQuery: string;
+  session: AuthSession;
+  jsonBody?: unknown;
+}): Promise<{ status: number; data: T; rawText: string }> {
+  const first = await rawBearerJsonRequest<T>({
+    method: options.method,
+    pathWithQuery: options.pathWithQuery,
+    accessToken: options.session.accessToken,
+    jsonBody: options.jsonBody,
+  });
+
+  if (first.status !== 401 || !options.session.refreshToken) {
+    return first;
+  }
+
+  const rotated = await refreshSessionLocked(options.session.credentials, {
+    accessToken: options.session.accessToken,
+    refreshToken: options.session.refreshToken,
+    expiresAt: options.session.expiresAt,
+    scope: options.session.scope,
+    savedAt: Math.floor(Date.now() / 1000),
+    seedRefreshTokenHash: options.session.seedRefreshTokenHash,
+  });
+
+  options.session.accessToken = rotated.tokens.accessToken;
+  options.session.refreshToken = rotated.tokens.refreshToken;
+  options.session.expiresAt = rotated.tokens.expiresAt;
+  options.session.scope = rotated.tokens.scope;
+  options.session.tokenSource = rotated.tokenSource;
+  options.session.seedRefreshTokenHash = rotated.tokens.seedRefreshTokenHash;
+  options.session.refreshed = options.session.refreshed || rotated.refreshed;
+
+  return rawBearerJsonRequest<T>({
+    method: options.method,
+    pathWithQuery: options.pathWithQuery,
+    accessToken: options.session.accessToken,
+    jsonBody: options.jsonBody,
+  });
+}
+
+function buildMissingTokenHint(credentialSource: CredentialSource, reason?: string): string {
+  const hostUi = detectHostConfigUi();
+  const prefix = reason ? `${reason} ` : '';
+  if (hostUi.hasNativeConfigUi) {
+    const uiRef = hostUi.configUiUrl
+      ? `[X Articles](${hostUi.configUiUrl})`
+      : "your host's MCP plugin configuration UI";
+    return `${prefix}Client ID found (${credentialSource}), but no valid OAuth 2.0 user token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${uiRef}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser (requires callback URI \`http://127.0.0.1:8976/oauth/callback\` in console.x.com).`;
+  }
+  return `${prefix}No cached OAuth 2.0 user token found. Call \`x_article_auth_status({ login: true })\` or run \`npx @wezzard/mcp-x-articles auth\` to authorize in your browser.`;
 }
 
 export async function ensureAuthenticatedSession(options: {
   allowInteractiveLogin: boolean;
   verifyProbe?: boolean;
 }): Promise<AuthSession> {
-  let { credentials, source: credentialSource } = loadConsumerCredentials();
-  let tokens = credentials ? loadUserOAuthTokens(credentials.consumerKey).tokens : null;
-  let tokenSource: CredentialSource = credentials
-    ? loadUserOAuthTokens(credentials.consumerKey).source
-    : 'none';
+  const hostUi = detectHostConfigUi();
+  let { credentials, source: credentialSource } = loadOAuth2ClientCredentials();
+  let tokens: OAuth2UserTokens | null = null;
+  let tokenSource: CredentialSource = 'none';
+  let refreshedFlag = false;
 
-  if (credentials && tokens && options.verifyProbe) {
-    const signingCreds: OAuth1SigningCredentials = {
-      consumerKey: credentials.consumerKey,
-      consumerSecret: credentials.consumerSecret,
-      tokenKey: tokens.accessToken,
-      tokenSecret: tokens.accessSecret,
-    };
-    const probe = await signedJsonRequest<{ data?: { id?: string; username?: string; name?: string } }>({
-      method: 'GET',
-      pathWithQuery: '/2/users/me',
-      signingCreds,
-    });
-    if (probe.status !== 401) {
-      return {
-        signingCreds,
-        credentialSource,
-        tokenSource,
-        user: probe.data?.data,
-      };
+  if (!credentials) {
+    if (hostUi.hasNativeConfigUi || !options.allowInteractiveLogin) {
+      throw new Error(`Missing X OAuth 2.0 Client ID. ${hostUi.setupInstruction}`);
     }
-    if (tokenSource !== 'env') {
-      clearUserOAuthTokens(credentials.consumerKey);
-      tokens = null;
-    } else {
-      throw new Error('X_OAUTH_ACCESS_TOKEN in environment variables returned 401 Unauthorized.');
+    const interactive = await runInteractiveSetupAndOAuth2Flow({
+      existingCredentials: null,
+      existingCredentialSource: 'none',
+    });
+    credentials = interactive.credentials;
+    credentialSource = interactive.credentialSource;
+    tokenSource = interactive.tokenSource;
+    tokens = {
+      accessToken: interactive.accessToken,
+      refreshToken: interactive.refreshToken,
+      expiresAt: interactive.expiresAt,
+      scope: interactive.scope,
+      savedAt: Math.floor(Date.now() / 1000),
+      seedRefreshTokenHash: interactive.seedRefreshTokenHash,
+    };
+  } else {
+    const loaded = loadOAuth2UserTokens(credentials.clientId);
+    tokens = loaded.tokens;
+    tokenSource = loaded.source;
+  }
+
+  if (tokens) {
+    const now = Math.floor(Date.now() / 1000);
+    const needsProactiveRefresh =
+      !tokens.accessToken || now >= tokens.expiresAt - REFRESH_BUFFER_SECONDS;
+
+    if (needsProactiveRefresh) {
+      if (tokens.refreshToken) {
+        try {
+          const rotated = await refreshSessionLocked(credentials, tokens);
+          tokens = rotated.tokens;
+          tokenSource = rotated.tokenSource;
+          refreshedFlag = rotated.refreshed;
+        } catch (err) {
+          const isInvalidGrant =
+            err instanceof OAuth2TokenError &&
+            (err.oauthError === 'invalid_grant' || err.status === 400 || err.status === 401);
+          if (!isInvalidGrant) {
+            throw err;
+          }
+          if (tokenSource !== 'env') {
+            clearOAuth2UserTokens(credentials.clientId);
+          }
+          tokens = null;
+          if (!options.allowInteractiveLogin) {
+            throw new Error(buildMissingTokenHint(credentialSource, err.message));
+          }
+        }
+      } else if (!tokens.accessToken) {
+        if (tokenSource !== 'env') {
+          clearOAuth2UserTokens(credentials.clientId);
+        }
+        tokens = null;
+      }
     }
   }
 
-  if (!credentials || !tokens) {
-    const hostUi = detectHostConfigUi();
-    if (!credentials && hostUi.hasNativeConfigUi) {
-      throw new Error(`Missing X OAuth Consumer Key and Secret. ${hostUi.setupInstruction}`);
-    }
-
+  if (!tokens) {
     if (!options.allowInteractiveLogin) {
-      if (!credentials) {
-        throw new Error(`Missing X OAuth Consumer Key and Secret. ${hostUi.setupInstruction}`);
-      }
-      throw new Error(
-        hostUi.hasNativeConfigUi
-          ? `No user OAuth 1.0a token is configured yet. Either configure X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize in your browser.`
-          : 'No cached OAuth 1.0a user token found. Call `x_article_auth_status({ login: true })` or run `npx @wezzard/mcp-x-articles auth` to authorize in your browser.',
-      );
+      throw new Error(buildMissingTokenHint(credentialSource));
     }
 
-    const interactive = await runInteractiveSetupAndOAuth1Flow({
+    const interactive = await runInteractiveSetupAndOAuth2Flow({
       existingCredentials: credentials,
       existingCredentialSource: credentialSource,
     });
     credentials = interactive.credentials;
     credentialSource = interactive.credentialSource;
-    tokenSource = saveUserOAuthTokens(
-      credentials.consumerKey,
-      interactive.accessToken,
-      interactive.accessSecret,
-    );
+    const seedHash = interactive.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+    if (seedHash && !interactive.seedRefreshTokenHash) {
+      tokenSource = saveOAuth2UserTokens(credentials.clientId, {
+        accessToken: interactive.accessToken,
+        refreshToken: interactive.refreshToken,
+        expiresAt: interactive.expiresAt,
+        scope: interactive.scope,
+        seedRefreshTokenHash: seedHash,
+      });
+    } else {
+      tokenSource = interactive.tokenSource;
+    }
     tokens = {
       accessToken: interactive.accessToken,
-      accessSecret: interactive.accessSecret,
+      refreshToken: interactive.refreshToken,
+      expiresAt: interactive.expiresAt,
+      scope: interactive.scope,
       savedAt: Math.floor(Date.now() / 1000),
+      ...(seedHash ? { seedRefreshTokenHash: seedHash } : {}),
     };
   }
 
-  const signingCreds: OAuth1SigningCredentials = {
-    consumerKey: credentials.consumerKey,
-    consumerSecret: credentials.consumerSecret,
-    tokenKey: tokens.accessToken,
-    tokenSecret: tokens.accessSecret,
-  };
-
-  let user: { id?: string; username?: string; name?: string } | undefined;
-  if (options.verifyProbe) {
-    const probe = await signedJsonRequest<{ data?: { id?: string; username?: string; name?: string } }>({
-      method: 'GET',
-      pathWithQuery: '/2/users/me',
-      signingCreds,
-    });
-    if (probe.status >= 400) {
-      throw new Error(`X API user verification failed (HTTP ${probe.status}): ${JSON.stringify(probe.data)}`);
-    }
-    user = probe.data?.data;
-  }
-
-  return {
-    signingCreds,
+  const session: AuthSession = {
+    credentials,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: tokens.expiresAt,
+    scope: tokens.scope,
     credentialSource,
     tokenSource,
-    user,
+    refreshed: refreshedFlag,
+    seedRefreshTokenHash: tokens.seedRefreshTokenHash,
   };
+
+  if (options.verifyProbe) {
+    let probe: {
+      status: number;
+      data: { data?: { id?: string; username?: string; name?: string } };
+      rawText: string;
+    };
+    try {
+      probe = await authorizedJsonRequest<{
+        data?: { id?: string; username?: string; name?: string };
+      }>({
+        method: 'GET',
+        pathWithQuery: '/2/users/me',
+        session,
+      });
+    } catch (err) {
+      const isInvalidGrant =
+        err instanceof OAuth2TokenError &&
+        (err.oauthError === 'invalid_grant' || err.status === 400 || err.status === 401);
+      if (!isInvalidGrant || !options.allowInteractiveLogin) {
+        throw err;
+      }
+      clearOAuth2UserTokens(credentials.clientId);
+      const interactive = await runInteractiveSetupAndOAuth2Flow({
+        existingCredentials: credentials,
+        existingCredentialSource: credentialSource,
+      });
+      const seedHash = interactive.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+      session.accessToken = interactive.accessToken;
+      session.refreshToken = interactive.refreshToken;
+      session.expiresAt = interactive.expiresAt;
+      session.scope = interactive.scope;
+      session.tokenSource = seedHash
+        ? saveOAuth2UserTokens(credentials.clientId, {
+            accessToken: interactive.accessToken,
+            refreshToken: interactive.refreshToken,
+            expiresAt: interactive.expiresAt,
+            scope: interactive.scope,
+            seedRefreshTokenHash: seedHash,
+          })
+        : interactive.tokenSource;
+      session.seedRefreshTokenHash = seedHash;
+      probe = await rawBearerJsonRequest<{
+        data?: { id?: string; username?: string; name?: string };
+      }>({
+        method: 'GET',
+        pathWithQuery: '/2/users/me',
+        accessToken: session.accessToken,
+      });
+    }
+
+    if (probe.status === 401 && options.allowInteractiveLogin) {
+      clearOAuth2UserTokens(credentials.clientId);
+      const interactive = await runInteractiveSetupAndOAuth2Flow({
+        existingCredentials: credentials,
+        existingCredentialSource: credentialSource,
+      });
+      const seedHash = interactive.seedRefreshTokenHash ?? activeEnvRefreshSeedHash();
+      session.accessToken = interactive.accessToken;
+      session.refreshToken = interactive.refreshToken;
+      session.expiresAt = interactive.expiresAt;
+      session.scope = interactive.scope;
+      session.tokenSource = seedHash
+        ? saveOAuth2UserTokens(credentials.clientId, {
+            accessToken: interactive.accessToken,
+            refreshToken: interactive.refreshToken,
+            expiresAt: interactive.expiresAt,
+            scope: interactive.scope,
+            seedRefreshTokenHash: seedHash,
+          })
+        : interactive.tokenSource;
+      session.seedRefreshTokenHash = seedHash;
+      probe = await rawBearerJsonRequest<{
+        data?: { id?: string; username?: string; name?: string };
+      }>({
+        method: 'GET',
+        pathWithQuery: '/2/users/me',
+        accessToken: session.accessToken,
+      });
+    }
+
+    if (probe.status >= 400) {
+      throw new Error(
+        `X API user verification failed (HTTP ${probe.status}): ${JSON.stringify(probe.data)}`,
+      );
+    }
+    session.user = probe.data?.data;
+  }
+
+  return session;
 }
 
 export async function loadImageBytes(
@@ -226,15 +464,15 @@ export async function uploadMediaBuffer(options: {
   bytes: Buffer;
   mediaType: string;
   mediaCategory?: string;
-  signingCreds: OAuth1SigningCredentials;
+  session: AuthSession;
   label?: string;
 }): Promise<{ media_id: string; media_category: string; bytes: number }> {
-  const mediaCategory = options.mediaCategory ?? 'tweet_image';
+  const mediaCategory = options.mediaCategory ?? guessMediaCategory(options.mediaType);
 
-  const initResp = await signedJsonRequest<{ data?: { id?: string }; id?: string }>({
+  const initResp = await authorizedJsonRequest<{ data?: { id?: string }; id?: string }>({
     method: 'POST',
     pathWithQuery: '/2/media/upload/initialize',
-    signingCreds: options.signingCreds,
+    session: options.session,
     jsonBody: {
       media_category: mediaCategory,
       media_type: options.mediaType,
@@ -254,10 +492,10 @@ export async function uploadMediaBuffer(options: {
   let segmentIndex = 0;
   for (let offset = 0; offset < options.bytes.length; offset += CHUNK_SIZE_BYTES) {
     const chunk = options.bytes.subarray(offset, offset + CHUNK_SIZE_BYTES);
-    const appendResp = await signedJsonRequest({
+    const appendResp = await authorizedJsonRequest({
       method: 'POST',
       pathWithQuery: `/2/media/upload/${encodeURIComponent(mediaId)}/append`,
-      signingCreds: options.signingCreds,
+      session: options.session,
       jsonBody: {
         media: chunk.toString('base64'),
         segment_index: segmentIndex,
@@ -281,10 +519,10 @@ export async function uploadMediaBuffer(options: {
     processing_info?: ProcessingInfo;
   }
 
-  const finResp = await signedJsonRequest<FinalizeData>({
+  const finResp = await authorizedJsonRequest<FinalizeData>({
     method: 'POST',
     pathWithQuery: `/2/media/upload/${encodeURIComponent(mediaId)}/finalize`,
-    signingCreds: options.signingCreds,
+    session: options.session,
   });
   if (finResp.status >= 400) {
     throw new Error(
@@ -296,10 +534,10 @@ export async function uploadMediaBuffer(options: {
   while (proc && (proc.state === 'pending' || proc.state === 'in_progress')) {
     const waitSeconds = Math.max(1, Number(proc.check_after_secs ?? 2));
     await new Promise((r) => setTimeout(r, waitSeconds * 1000));
-    const statusResp = await signedJsonRequest<FinalizeData>({
+    const statusResp = await authorizedJsonRequest<FinalizeData>({
       method: 'GET',
       pathWithQuery: `/2/media/upload?media_id=${encodeURIComponent(mediaId)}&command=STATUS`,
-      signingCreds: options.signingCreds,
+      session: options.session,
     });
     if (statusResp.status >= 400) {
       throw new Error(
@@ -325,7 +563,7 @@ export async function createXArticleDraft(options: {
   contentState: ContentState;
   coverMediaId?: string;
   coverMediaCategory?: string;
-  signingCreds: OAuth1SigningCredentials;
+  session: AuthSession;
 }): Promise<{ article_id: string; editor_url: string; raw: unknown }> {
   const payload: Record<string, unknown> = {
     title: options.title,
@@ -338,10 +576,10 @@ export async function createXArticleDraft(options: {
     };
   }
 
-  const resp = await signedJsonRequest<{ data?: { id?: string }; id?: string }>({
+  const resp = await authorizedJsonRequest<{ data?: { id?: string }; id?: string }>({
     method: 'POST',
     pathWithQuery: '/2/articles/draft',
-    signingCreds: options.signingCreds,
+    session: options.session,
     jsonBody: payload,
   });
 
@@ -363,7 +601,7 @@ export async function createXArticleDraft(options: {
 
 export async function publishXArticle(options: {
   articleId: string;
-  signingCreds: OAuth1SigningCredentials;
+  session: AuthSession;
   usernameHint?: string;
 }): Promise<{ article_id: string; post_id: string; post_url: string; raw: unknown }> {
   const cleanId = options.articleId.trim();
@@ -371,10 +609,10 @@ export async function publishXArticle(options: {
     throw new Error(`Invalid article_id "${options.articleId}": expected a numeric X snowflake ID.`);
   }
 
-  const resp = await signedJsonRequest<{ data?: { post_id?: string; id?: string }; post_id?: string }>({
+  const resp = await authorizedJsonRequest<{ data?: { post_id?: string; id?: string }; post_id?: string }>({
     method: 'POST',
     pathWithQuery: `/2/articles/${encodeURIComponent(cleanId)}/publish`,
-    signingCreds: options.signingCreds,
+    session: options.session,
   });
 
   if (resp.status >= 400) {
@@ -393,4 +631,4 @@ export async function publishXArticle(options: {
   };
 }
 
-export type { ConsumerCredentials };
+export type { OAuth2ClientCredentials };

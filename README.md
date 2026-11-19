@@ -4,6 +4,7 @@ Publish a local Markdown file as an [X Article](https://help.x.com/en/using-x/ar
 
 - A deterministic compiler (`marked`) converts Markdown into X's Draft.js `content_state` in memory with UTF-16 code unit offsets, eliminating model-generated JSON and offset errors.
 - Local and remote images stream directly from the Node.js MCP server to X's chunked media endpoints so base64 bytes never enter the LLM context window.
+- OAuth 2.0 User Context (`Authorization: Bearer`) with PKCE (`S256`) and automatic long-term rotating `offline.access` refresh tokens backed by a cross-process lock and macOS Keychain persistence.
 - Two human checkpoints guard every run: a pre-flight secret and degradation check before uploading bytes to X, and an explicit approval step after draft creation before irreversible publishing.
 - One self-contained, pre-bundled Node.js executable (`dist/server.mjs`) powers five native agent plugin bundles (**Antigravity**, **Claude Code**, **Codex**, **Cursor**, and **pi**) as well as `npx` for **Claude Desktop**.
 
@@ -21,33 +22,34 @@ flowchart LR
     end
 
     subgraph Server["Committed Headless Executable (dist/server.mjs)"]
-        T1["x_article_auth_status (Browser Keychain Setup)"]
+        T1["x_article_auth_status (OAuth 2.0 PKCE & Refresh)"]
         T2["x_article_preflight (SHA-256 Token + Scanner)"]
         T3["x_article_create_draft (marked AST + Chunked Upload)"]
         T4["x_article_publish (destructiveHint: true)"]
     end
 
     KC["macOS Keychain / 0600 XDG Fallback"]
-    XAPI["Official X API v2 (/2/media/upload/* & /2/articles/*)"]
+    XAPI["Official X API v2 (/2/oauth2/token, /2/media/upload/* & /2/articles/*)"]
 
     Hosts -->|"stdio JSON-RPC"| Server
     Server <--> KC
-    Server -->|"OAuth 1.0a HTTPS"| XAPI
+    Server -->|"OAuth 2.0 Bearer + Auto-Refresh"| XAPI
 ```
 
 ## Prerequisites
 
 - You need Node.js `>= 20` on your machine.
-- You need an [X Developer](https://console.x.com) application with pay-per-use API credits and OAuth 1.0a (**Read and write** permissions) enabled.
-- For 1-click browser redirect, register `http://127.0.0.1:8976/oauth/callback` in your X Developer App's Callback URLs; if port `8976` is occupied by another local process or not whitelisted in `console.x.com`, the server automatically binds an OS-assigned random port and falls back to X's 7-digit OAuth 1.0a PIN flow.
+- You need an [X Developer](https://console.x.com) application with pay-per-use API credits and **User authentication settings** configured (**Read and write** permissions; type **Web App, Automated App or Bot** for confidential clients with `Client Secret`, or **Native App** for public PKCE clients).
+- Required OAuth 2.0 scopes (requested automatically in PKCE login): `tweet.read tweet.write users.read media.write offline.access`.
+- For 1-click browser PKCE redirect, register `http://127.0.0.1:8976/oauth/callback` in your X Developer App's Callback URIs (or skip callback registration entirely by clicking **Generate** under `OAuth 2.0 Keys -> Access Token` in `console.x.com` and pasting the Refresh Token).
 
 ## Authentication (Zero Terminal Required)
 
-You can configure authentication in any of three ways, and all six agents share the resulting **macOS Keychain** entry (`@wezzard/mcp-x-articles`):
+You can configure authentication in any of three ways, and all six agents share rotating OAuth 2.0 refresh tokens via **macOS Keychain** (`@wezzard/mcp-x-articles`, with `0600` XDG fallback):
 
-1. **Native IDE Plugin Settings UI (Antigravity & Cursor):** In agents with a native MCP plugin configuration UI — such as Antigravity (`[X Articles](customization://x-articles)`) and Cursor (`.cursor-plugin/plugin.json` `variables`) — configure `X_OAUTH_CONSUMER_KEY`, `X_OAUTH_CONSUMER_SECRET`, and optionally `X_OAUTH_ACCESS_TOKEN` and `X_OAUTH_ACCESS_TOKEN_SECRET` directly in the plugin settings UI. The localhost `/setup` web form is never shown when a native host configuration UI is available.
-2. **In-Browser GUI Setup Fallback (For Agents Without a Native Plugin Settings UI):** In agents that do not provide a GUI for MCP plugin variables (Claude Code, Codex, pi, Claude Desktop), calling `x_article_auth_status({ login: true })` when keys are not yet in macOS Keychain opens a local-only setup card in your browser (`127.0.0.1`), saves your **API Key** and **API Key Secret** straight to macOS Keychain without sending them to the LLM, and continues directly to X OAuth 1.0a consent.
-3. **Terminal CLI Setup:** Run `npx -y @wezzard/mcp-x-articles auth` once in a terminal to store your keys in macOS Keychain and authorize in your browser.
+1. **Native IDE Plugin Settings UI (Antigravity & Cursor):** In agents with a native MCP plugin configuration UI — such as Antigravity (`[X Articles](customization://x-articles)`) and Cursor (`.cursor-plugin/plugin.json` `variables`) — configure `X_OAUTH2_CLIENT_ID`, optional `X_OAUTH2_CLIENT_SECRET`, and optionally `X_OAUTH2_REFRESH_TOKEN` (from `console.x.com` → `OAuth 2.0 Keys` → `Access Token` → `Generate`) directly in the plugin settings UI. Once bootstrapped, rotated single-use refresh tokens are persisted safely in macOS Keychain so your original seed token is never reused. The localhost `/setup` web form is never shown when a native host configuration UI is available.
+2. **In-Browser GUI Setup Fallback (For Agents Without a Native Plugin Settings UI):** In agents that do not provide a GUI for MCP plugin variables (Claude Code, Codex, pi, Claude Desktop), calling `x_article_auth_status({ login: true })` when keys are not yet in macOS Keychain opens a local-only setup card in your browser (`127.0.0.1`), saves your **Client ID** and optional **Client Secret** (or optional **Refresh Token**) straight to macOS Keychain without sending them to the LLM, and completes X OAuth 2.0 PKCE (`S256`) consent with `offline.access`.
+3. **Terminal CLI Setup:** Run `npx -y @wezzard/mcp-x-articles auth` once in a terminal to store your keys in macOS Keychain and authorize via Refresh Token or browser PKCE.
 
 ## Install
 
@@ -110,7 +112,7 @@ Add `@wezzard/mcp-x-articles` to `claude_desktop_config.json`:
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `x_article_auth_status` | Tool (`readOnlyHint`) | Checks credential resolution (`env` -> `macos-keychain` -> `xdg-config`), verifies `/2/users/me`, and launches the local browser Keychain setup + OAuth 1.0a login when `login: true`. |
+| `x_article_auth_status` | Tool (`readOnlyHint`) | Checks OAuth 2.0 credential resolution (`env` -> `macos-keychain` -> `xdg-config`), proactively refreshes rotating `offline.access` tokens under a cross-process lock, verifies `/2/users/me`, and launches OAuth 2.0 PKCE browser consent when `login: true`. |
 | `x_article_preflight` | Tool (`readOnlyHint`) | Scans Markdown text for secrets and PII, dry-runs `marked` conversion to list lossy warnings, attaches local images for visual review, and issues a SHA-256 `preflight_token`. |
 | `x_article_create_draft` | Tool (`openWorldHint`) | Verifies `preflight_token` against live disk hashes, uploads inline and cover images in 2.5 MB chunks, compiles UTF-16 `content_state` in memory, and creates a reversible X draft. |
 | `x_article_publish` | Tool (`destructiveHint`) | Publishes a draft permanently (`POST /2/articles/{article_id}/publish`) and returns the live post URL. |
