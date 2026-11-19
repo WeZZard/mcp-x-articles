@@ -221,10 +221,7 @@ function buildMissingTokenHint(credentialSource: CredentialSource, reason?: stri
   const hostUi = detectHostConfigUi();
   const prefix = reason ? `${reason} ` : '';
   if (hostUi.hasNativeConfigUi) {
-    const uiRef = hostUi.configUiUrl
-      ? `[X Articles](${hostUi.configUiUrl})`
-      : "your host's MCP plugin configuration UI";
-    return `${prefix}Client ID found (${credentialSource}), but no valid OAuth 2.0 user token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${uiRef}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser (requires callback URI \`http://127.0.0.1:8976/oauth/callback\` in console.x.com).`;
+    return `${prefix}Client ID found (${credentialSource}), but no valid OAuth 2.0 user token is configured yet. Ensure callback URI \`http://127.0.0.1:8976/oauth/callback\` is registered under App Settings -> User authentication settings in https://console.x.com and call \`x_article_auth_status({ login: true })\` once to authorize your account via browser PKCE (requests \`media.write\` + long-term rotating \`offline.access\`).`;
   }
   return `${prefix}No cached OAuth 2.0 user token found. Call \`x_article_auth_status({ login: true })\` or run \`npx @wezzard/mcp-x-articles auth\` to authorize in your browser.`;
 }

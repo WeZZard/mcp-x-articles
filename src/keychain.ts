@@ -70,7 +70,7 @@ export function detectHostConfigUi(): HostConfigUiInfo {
       hasNativeConfigUi: true,
       hostName: 'antigravity',
       configUiUrl,
-      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate).`,
+      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys. Then ensure http://127.0.0.1:8976/oauth/callback is registered in App Settings -> User authentication settings and call \`x_article_auth_status({ login: true })\` once to authorize with media.write + offline.access.`,
     };
   }
 
@@ -80,7 +80,7 @@ export function detectHostConfigUi(): HostConfigUiInfo {
       hostName: 'cursor',
       configUiUrl: null,
       setupInstruction:
-        "Open Cursor's MCP plugin settings UI and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate).",
+        "Open Cursor's MCP plugin settings UI and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys. Then ensure http://127.0.0.1:8976/oauth/callback is registered in App Settings -> User authentication settings and call `x_article_auth_status({ login: true })` once to authorize with media.write + offline.access.",
     };
   }
 

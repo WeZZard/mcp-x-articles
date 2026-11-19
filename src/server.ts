@@ -315,7 +315,7 @@ export function createMcpServer(): Server {
               has_native_config_ui: hostUi.hasNativeConfigUi,
               native_config_ui_url: hostUi.configUiUrl,
               setup_hint: hostUi.hasNativeConfigUi
-                ? `OAuth 2.0 Client ID found (${credentialSource}), but no user Refresh Token or Access Token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser.`
+                ? `OAuth 2.0 Client ID found (${credentialSource}), but no user Access Token or Refresh Token is cached yet. Ensure \`http://127.0.0.1:8976/oauth/callback\` is registered under App Settings -> User authentication settings in https://console.x.com and call \`x_article_auth_status({ login: true })\` once to authorize your account on x.com via browser PKCE (grants \`media.write\` + long-term rotating \`offline.access\`).`
                 : 'OAuth 2.0 Client ID found, but no user OAuth 2.0 token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser.',
             });
           }

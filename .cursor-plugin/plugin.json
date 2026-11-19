@@ -16,15 +16,11 @@
     "properties": {
       "X_OAUTH2_CLIENT_ID": {
         "type": "string",
-        "description": "X OAuth 2.0 Client ID under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens."
+        "description": "X OAuth 2.0 Client ID under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys & Tokens."
       },
       "X_OAUTH2_CLIENT_SECRET": {
         "type": "string",
-        "description": "Optional X OAuth 2.0 Client Secret under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens (for confidential clients)."
-      },
-      "X_OAUTH2_REFRESH_TOKEN": {
-        "type": "string",
-        "description": "Optional long-term OAuth 2.0 Refresh Token from 'OAuth 2.0 Keys -> Access Token -> Generate' in https://console.x.com (leave blank to authorize via browser PKCE)."
+        "description": "X OAuth 2.0 Client Secret under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys & Tokens (required for confidential clients; optional for public PKCE clients)."
       }
     }
   },
@@ -36,8 +32,7 @@
       ],
       "env": {
         "X_OAUTH2_CLIENT_ID": "${X_OAUTH2_CLIENT_ID}",
-        "X_OAUTH2_CLIENT_SECRET": "${X_OAUTH2_CLIENT_SECRET}",
-        "X_OAUTH2_REFRESH_TOKEN": "${X_OAUTH2_REFRESH_TOKEN}"
+        "X_OAUTH2_CLIENT_SECRET": "${X_OAUTH2_CLIENT_SECRET}"
       }
     }
   }

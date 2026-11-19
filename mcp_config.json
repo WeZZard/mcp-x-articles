@@ -8,24 +8,18 @@
       "cwd": ".",
       "env": {
         "X_OAUTH2_CLIENT_ID": "${X_OAUTH2_CLIENT_ID}",
-        "X_OAUTH2_CLIENT_SECRET": "${X_OAUTH2_CLIENT_SECRET}",
-        "X_OAUTH2_REFRESH_TOKEN": "${X_OAUTH2_REFRESH_TOKEN}"
+        "X_OAUTH2_CLIENT_SECRET": "${X_OAUTH2_CLIENT_SECRET}"
       },
       "variables": [
         {
           "name": "X_OAUTH2_CLIENT_ID",
           "title": "X OAuth 2.0 Client ID",
-          "description": "Client ID under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens."
+          "description": "Client ID under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys & Tokens."
         },
         {
           "name": "X_OAUTH2_CLIENT_SECRET",
-          "title": "X OAuth 2.0 Client Secret (Optional for public clients)",
-          "description": "Client Secret under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys and tokens (optional for public PKCE clients)."
-        },
-        {
-          "name": "X_OAUTH2_REFRESH_TOKEN",
-          "title": "X OAuth 2.0 Refresh Token (Optional — paste from Console 'Generate', or leave blank for browser PKCE login)",
-          "description": "Optional long-term OAuth 2.0 Refresh Token from 'OAuth 2.0 Keys -> Access Token -> Generate' in https://console.x.com (recommended for zero-callback long-term auth, or leave blank to authorize via browser PKCE)."
+          "title": "X OAuth 2.0 Client Secret",
+          "description": "Client Secret under 'OAuth 2.0 Keys' in https://console.x.com -> Apps -> Keys & Tokens (configure App Type as 'Web App, Automated App or Bot')."
         }
       ]
     }

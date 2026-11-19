@@ -98,15 +98,16 @@ async function runAuthCli(resetKeys: boolean): Promise<void> {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
     try {
       process.stderr.write(
-        'For browser PKCE login, register http://127.0.0.1:8976/oauth/callback in https://console.x.com.\n' +
-          'Or click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token below.\n\n',
+        'For browser PKCE login, register http://127.0.0.1:8976/oauth/callback in https://console.x.com -> App Settings -> User authentication settings.\n\n',
       );
       const clientId = (await rl.question('X OAuth 2.0 Client ID: ')).trim();
       const clientSecret =
         (await rl.question('X OAuth 2.0 Client Secret (optional for public clients): ')).trim() ||
         undefined;
       cliRefreshToken = (
-        await rl.question('X OAuth 2.0 Refresh Token (leave blank for browser PKCE login): ')
+        await rl.question(
+          'X OAuth 2.0 Refresh Token (optional — leave blank for browser PKCE login with media.write): ',
+        )
       ).trim();
 
       if (!clientId) {

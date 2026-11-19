@@ -50,14 +50,21 @@ assert.ok(!agyMcpRaw.includes('xmcp-stdio.py'), 'mcp_config.json must not refere
 assert.ok(!agyMcpRaw.includes('X_BEARER_TOKEN'), 'mcp_config.json must not include unused X_BEARER_TOKEN');
 assert.ok(!agyMcpRaw.includes('X_OAUTH_CONSUMER_KEY'), 'mcp_config.json must not include legacy OAuth 1.0a X_OAUTH_CONSUMER_KEY');
 assert.ok(!cursorRaw.includes('X_OAUTH_CONSUMER_KEY'), '.cursor-plugin/plugin.json must not include legacy OAuth 1.0a X_OAUTH_CONSUMER_KEY');
+assert.ok(!agyMcpRaw.includes('X_OAUTH2_REFRESH_TOKEN'), 'mcp_config.json must not expose X_OAUTH2_REFRESH_TOKEN as a required UI field');
+assert.ok(!cursorRaw.includes('X_OAUTH2_REFRESH_TOKEN'), '.cursor-plugin/plugin.json must not expose X_OAUTH2_REFRESH_TOKEN');
 for (const vName of [
   'X_OAUTH2_CLIENT_ID',
   'X_OAUTH2_CLIENT_SECRET',
-  'X_OAUTH2_REFRESH_TOKEN',
 ]) {
   assert.ok(agyMcpRaw.includes(vName), `mcp_config.json must expose ${vName}`);
   assert.ok(cursorRaw.includes(vName), `.cursor-plugin/plugin.json must expose ${vName}`);
 }
+const agyMcp = JSON.parse(agyMcpRaw);
+assert.deepEqual(
+  agyMcp.mcpServers['mcp-x-articles'].variables.map((v) => v.name),
+  ['X_OAUTH2_CLIENT_ID', 'X_OAUTH2_CLIENT_SECRET'],
+  'mcp_config.json variables must contain only X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET',
+);
 
 // 3. Pack an actual npm tarball into an isolated temp directory, extract it, verify every
 //    required file is present with zero runtime dependencies, and run an MCP stdio handshake

@@ -361,7 +361,7 @@ export async function runInteractiveSetupAndOAuth2Flow(options: {
   const hostUi = detectHostConfigUi();
   if (!options.existingCredentials && hostUi.hasNativeConfigUi) {
     throw new Error(
-      `Missing X OAuth 2.0 Client ID. Because you are running inside ${hostUi.hostName}, configure X_OAUTH2_CLIENT_ID (and optional X_OAUTH2_CLIENT_SECRET / X_OAUTH2_REFRESH_TOKEN) in the native plugin settings UI (${hostUi.configUiUrl ?? hostUi.hostName}) rather than the localhost setup page.`,
+      `Missing X OAuth 2.0 Client ID. Because you are running inside ${hostUi.hostName}, configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET in the native plugin settings UI (${hostUi.configUiUrl ?? hostUi.hostName}) rather than the localhost setup page.`,
     );
   }
 
@@ -415,9 +415,9 @@ export async function runInteractiveSetupAndOAuth2Flow(options: {
             <label for="client_secret">X OAuth 2.0 Client Secret (Optional for public clients)</label>
             <input id="client_secret" name="client_secret" type="password" autocomplete="off"
               placeholder="Paste Client Secret (or leave blank if public)" />
-            <label for="refresh_token">X OAuth 2.0 Refresh Token (Optional — skip browser callback)</label>
+            <label for="refresh_token">X OAuth 2.0 Refresh Token (Optional — only if obtained with media.write + offline.access)</label>
             <input id="refresh_token" name="refresh_token" type="password" autocomplete="off"
-              placeholder="Paste from Console 'Generate', or leave blank for PKCE login" />
+              placeholder="Leave blank for browser PKCE login (recommended)" />
             <button type="submit">Save to Keychain &amp; Authorize on X &rarr;</button>
           </form>
           <p class="hint">
@@ -585,7 +585,7 @@ export async function runInteractiveSetupAndOAuth2Flow(options: {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === 'EADDRINUSE') {
       throw new Error(
-        `OAuth 2.0 callback port ${host}:${port} is already in use (EADDRINUSE). Free port ${port}, set X_OAUTH_CALLBACK_PORT / X_OAUTH_REDIRECT_URI to an open port registered in https://console.x.com, or generate a Refresh Token directly in https://console.x.com and configure X_OAUTH2_REFRESH_TOKEN.`,
+        `OAuth 2.0 callback port ${host}:${port} is already in use (EADDRINUSE). Free port ${port}, or set X_OAUTH_CALLBACK_PORT / X_OAUTH_REDIRECT_URI to an open port registered in https://console.x.com.`,
       );
     }
     throw err;

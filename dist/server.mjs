@@ -7295,7 +7295,7 @@ function detectHostConfigUi() {
       hasNativeConfigUi: true,
       hostName: "antigravity",
       configUiUrl,
-      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate).`
+      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys. Then ensure http://127.0.0.1:8976/oauth/callback is registered in App Settings -> User authentication settings and call \`x_article_auth_status({ login: true })\` once to authorize with media.write + offline.access.`
     };
   }
   if ((process.env.CURSOR_PLUGIN_ROOT ?? "").trim()) {
@@ -7303,7 +7303,7 @@ function detectHostConfigUi() {
       hasNativeConfigUi: true,
       hostName: "cursor",
       configUiUrl: null,
-      setupInstruction: "Open Cursor's MCP plugin settings UI and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET (and optionally X_OAUTH2_REFRESH_TOKEN from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys -> Access Token -> Generate)."
+      setupInstruction: "Open Cursor's MCP plugin settings UI and configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET from https://console.x.com -> Keys & Tokens -> OAuth 2.0 Keys. Then ensure http://127.0.0.1:8976/oauth/callback is registered in App Settings -> User authentication settings and call `x_article_auth_status({ login: true })` once to authorize with media.write + offline.access."
     };
   }
   return {
@@ -7870,7 +7870,7 @@ async function runInteractiveSetupAndOAuth2Flow(options) {
   const hostUi = detectHostConfigUi();
   if (!options.existingCredentials && hostUi.hasNativeConfigUi) {
     throw new Error(
-      `Missing X OAuth 2.0 Client ID. Because you are running inside ${hostUi.hostName}, configure X_OAUTH2_CLIENT_ID (and optional X_OAUTH2_CLIENT_SECRET / X_OAUTH2_REFRESH_TOKEN) in the native plugin settings UI (${hostUi.configUiUrl ?? hostUi.hostName}) rather than the localhost setup page.`
+      `Missing X OAuth 2.0 Client ID. Because you are running inside ${hostUi.hostName}, configure X_OAUTH2_CLIENT_ID and X_OAUTH2_CLIENT_SECRET in the native plugin settings UI (${hostUi.configUiUrl ?? hostUi.hostName}) rather than the localhost setup page.`
     );
   }
   const { host, port, callbackPath, explicitRedirectUri } = resolveCallbackConfig();
@@ -7919,9 +7919,9 @@ async function runInteractiveSetupAndOAuth2Flow(options) {
             <label for="client_secret">X OAuth 2.0 Client Secret (Optional for public clients)</label>
             <input id="client_secret" name="client_secret" type="password" autocomplete="off"
               placeholder="Paste Client Secret (or leave blank if public)" />
-            <label for="refresh_token">X OAuth 2.0 Refresh Token (Optional \u2014 skip browser callback)</label>
+            <label for="refresh_token">X OAuth 2.0 Refresh Token (Optional \u2014 only if obtained with media.write + offline.access)</label>
             <input id="refresh_token" name="refresh_token" type="password" autocomplete="off"
-              placeholder="Paste from Console 'Generate', or leave blank for PKCE login" />
+              placeholder="Leave blank for browser PKCE login (recommended)" />
             <button type="submit">Save to Keychain &amp; Authorize on X &rarr;</button>
           </form>
           <p class="hint">
@@ -8080,7 +8080,7 @@ async function runInteractiveSetupAndOAuth2Flow(options) {
     const code = err?.code;
     if (code === "EADDRINUSE") {
       throw new Error(
-        `OAuth 2.0 callback port ${host}:${port} is already in use (EADDRINUSE). Free port ${port}, set X_OAUTH_CALLBACK_PORT / X_OAUTH_REDIRECT_URI to an open port registered in https://console.x.com, or generate a Refresh Token directly in https://console.x.com and configure X_OAUTH2_REFRESH_TOKEN.`
+        `OAuth 2.0 callback port ${host}:${port} is already in use (EADDRINUSE). Free port ${port}, or set X_OAUTH_CALLBACK_PORT / X_OAUTH_REDIRECT_URI to an open port registered in https://console.x.com.`
       );
     }
     throw err;
@@ -19699,8 +19699,7 @@ function buildMissingTokenHint(credentialSource, reason) {
   const hostUi = detectHostConfigUi();
   const prefix = reason ? `${reason} ` : "";
   if (hostUi.hasNativeConfigUi) {
-    const uiRef = hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI";
-    return `${prefix}Client ID found (${credentialSource}), but no valid OAuth 2.0 user token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${uiRef}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser (requires callback URI \`http://127.0.0.1:8976/oauth/callback\` in console.x.com).`;
+    return `${prefix}Client ID found (${credentialSource}), but no valid OAuth 2.0 user token is configured yet. Ensure callback URI \`http://127.0.0.1:8976/oauth/callback\` is registered under App Settings -> User authentication settings in https://console.x.com and call \`x_article_auth_status({ login: true })\` once to authorize your account via browser PKCE (requests \`media.write\` + long-term rotating \`offline.access\`).`;
   }
   return `${prefix}No cached OAuth 2.0 user token found. Call \`x_article_auth_status({ login: true })\` or run \`npx @wezzard/mcp-x-articles auth\` to authorize in your browser.`;
 }
@@ -20285,7 +20284,7 @@ function createMcpServer() {
               refreshed: false,
               has_native_config_ui: hostUi.hasNativeConfigUi,
               native_config_ui_url: hostUi.configUiUrl,
-              setup_hint: hostUi.hasNativeConfigUi ? `OAuth 2.0 Client ID found (${credentialSource}), but no user Refresh Token or Access Token is configured yet. Either click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token into X_OAUTH2_REFRESH_TOKEN in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser.` : "OAuth 2.0 Client ID found, but no user OAuth 2.0 token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser."
+              setup_hint: hostUi.hasNativeConfigUi ? `OAuth 2.0 Client ID found (${credentialSource}), but no user Access Token or Refresh Token is cached yet. Ensure \`http://127.0.0.1:8976/oauth/callback\` is registered under App Settings -> User authentication settings in https://console.x.com and call \`x_article_auth_status({ login: true })\` once to authorize your account on x.com via browser PKCE (grants \`media.write\` + long-term rotating \`offline.access\`).` : "OAuth 2.0 Client ID found, but no user OAuth 2.0 token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser."
             });
           }
         }
@@ -20539,11 +20538,13 @@ async function runAuthCli(resetKeys) {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
     try {
       process.stderr.write(
-        "For browser PKCE login, register http://127.0.0.1:8976/oauth/callback in https://console.x.com.\nOr click Generate next to OAuth 2.0 Keys -> Access Token in https://console.x.com and paste the Refresh Token below.\n\n"
+        "For browser PKCE login, register http://127.0.0.1:8976/oauth/callback in https://console.x.com -> App Settings -> User authentication settings.\n\n"
       );
       const clientId = (await rl.question("X OAuth 2.0 Client ID: ")).trim();
       const clientSecret = (await rl.question("X OAuth 2.0 Client Secret (optional for public clients): ")).trim() || void 0;
-      cliRefreshToken = (await rl.question("X OAuth 2.0 Refresh Token (leave blank for browser PKCE login): ")).trim();
+      cliRefreshToken = (await rl.question(
+        "X OAuth 2.0 Refresh Token (optional \u2014 leave blank for browser PKCE login with media.write): "
+      )).trim();
       if (!clientId) {
         throw new Error("X OAuth 2.0 Client ID is required.");
       }
