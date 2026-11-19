@@ -1,7 +1,7 @@
 {
   "$schema": "https://cursor.com/schemas/plugin.schema.json",
   "name": "mcp-x-articles",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Publish Markdown files as X Articles via official X API v2.",
   "author": {
     "name": "WeZZard",
