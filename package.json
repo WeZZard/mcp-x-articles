@@ -1,6 +1,6 @@
 {
   "name": "@wezzard/mcp-x-articles",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "type": "module",
   "description": "MCP server and multi-agent plugin for publishing Markdown files as X Articles via the official X API v2 Articles endpoints: deterministic Markdown conversion, zero-token media upload, macOS Keychain secret storage, and two-step human review.",
   "license": "MIT",
