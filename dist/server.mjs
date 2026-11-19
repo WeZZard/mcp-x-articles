@@ -20029,7 +20029,7 @@ async function publishXArticle(options) {
 
 // src/server.ts
 var PACKAGE_NAME = "@wezzard/mcp-x-articles";
-var PACKAGE_VERSION = "0.3.0";
+var PACKAGE_VERSION = "0.3.1";
 var MAX_INLINE_PREVIEW_BYTES = 5 * 1024 * 1024;
 var PREVIEWABLE_MIMES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 var SERVER_INSTRUCTIONS = [
