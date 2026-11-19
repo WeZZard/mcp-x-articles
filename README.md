@@ -47,7 +47,7 @@ flowchart LR
 
 You can configure authentication in any of three ways, and all six agents share rotating OAuth 2.0 refresh tokens via **macOS Keychain** (`@wezzard/mcp-x-articles`, with `0600` XDG fallback):
 
-1. **Native IDE Plugin Settings UI (Antigravity & Cursor):** In agents with a native MCP plugin configuration UI — such as Antigravity (`[X Articles](customization://x-articles)`) and Cursor (`.cursor-plugin/plugin.json` `variables`) — configure `X_OAUTH2_CLIENT_ID` and `X_OAUTH2_CLIENT_SECRET` directly in the plugin settings UI, then call `x_article_auth_status({ login: true })` once to authorize via browser PKCE (`media.write` + `offline.access`). Rotated single-use refresh tokens are persisted safely in macOS Keychain thereafter. The localhost `/setup` web form is never shown when a native host configuration UI is available.
+1. **Native IDE Plugin Settings UI (Antigravity & Cursor):** In agents with a native MCP plugin configuration UI — such as Antigravity (`[X Articles](customization://x-articles)`) and Cursor (**Customize → Plugins → Configure**, when installed as a [Cursor Plugin](#cursor)) — configure `X_OAUTH2_CLIENT_ID` and `X_OAUTH2_CLIENT_SECRET` directly in the plugin settings UI, then call `x_article_auth_status({ login: true })` once to authorize via browser PKCE (`media.write` + `offline.access`). Rotated single-use refresh tokens are persisted safely in macOS Keychain thereafter. The localhost `/setup` web form is never shown when a native host configuration UI is available.
 2. **In-Browser GUI Setup Fallback (For Agents Without a Native Plugin Settings UI):** In agents that do not provide a GUI for MCP plugin variables (Claude Code, Codex, pi, Claude Desktop), calling `x_article_auth_status({ login: true })` when keys are not yet in macOS Keychain opens a local-only setup card in your browser (`127.0.0.1`), saves your **Client ID** and optional **Client Secret** straight to macOS Keychain without sending them to the LLM, and completes X OAuth 2.0 PKCE (`S256`) consent with `offline.access`.
 3. **Terminal CLI Setup:** Run `npx -y @wezzard/mcp-x-articles auth` once in a terminal to store your keys in macOS Keychain and authorize via browser PKCE.
 
@@ -83,7 +83,22 @@ codex mcp add x-articles -- npx -y @wezzard/mcp-x-articles
 
 ### Cursor
 
-Load this repository as a Cursor Plugin (`.cursor-plugin/plugin.json`), or add `npx -y @wezzard/mcp-x-articles` to `~/.cursor/mcp.json`.
+Install this repository as a local Cursor Plugin under `~/.cursor/plugins/local/` to enable Cursor's native **Configure** UI for `X_OAUTH2_CLIENT_ID` and `X_OAUTH2_CLIENT_SECRET` (no `npm install` is required because `dist/server.mjs` is pre-bundled).
+
+- Clone or copy this repository directly into `~/.cursor/plugins/local/mcp-x-articles`, because Cursor rejects symlinks whose targets resolve outside `~/.cursor/plugins/local/`:
+
+  ```sh
+  git clone https://github.com/WeZZard/mcp-x-articles ~/.cursor/plugins/local/mcp-x-articles
+  ```
+
+- Remove any standalone `x-articles` entry from `~/.cursor/mcp.json` so Cursor does not launch a duplicate MCP server alongside the plugin.
+- Restart Cursor or run **Developer: Reload Window** from the Command Palette so Cursor discovers the local plugin.
+- Open **Customize → Plugins**, select `mcp-x-articles`, click **Configure**, and save `X_OAUTH2_CLIENT_ID` and `X_OAUTH2_CLIENT_SECRET`.
+- Call `x_article_auth_status({ login: true })` once in a Cursor chat to complete browser PKCE consent and store rotating user OAuth 2.0 tokens in macOS Keychain.
+- Run `git -C ~/.cursor/plugins/local/mcp-x-articles pull` and reload Cursor whenever you want to update the local plugin.
+
+> [!NOTE]
+> Adding `npx -y @wezzard/mcp-x-articles` directly to `~/.cursor/mcp.json` runs the server as a standalone `stdio` MCP server without loading `.cursor-plugin/plugin.json`. Cursor does not render a plugin **Configure** UI for standalone entries in `~/.cursor/mcp.json`, so authentication falls back to the localhost browser `/setup` flow (`x_article_auth_status({ login: true })`) or `npx -y @wezzard/mcp-x-articles auth`.
 
 ### pi
 
