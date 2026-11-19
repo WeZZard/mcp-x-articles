@@ -16,11 +16,19 @@
     "properties": {
       "X_OAUTH_CONSUMER_KEY": {
         "type": "string",
-        "description": "Optional X API Key (leave blank to configure via the local browser Keychain setup card)."
+        "description": "X API Key (Consumer Key) under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
       },
       "X_OAUTH_CONSUMER_SECRET": {
         "type": "string",
-        "description": "Optional X API Key Secret (leave blank to configure via the local browser Keychain setup card)."
+        "description": "X API Key Secret (Consumer Secret) under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
+      },
+      "X_OAUTH_ACCESS_TOKEN": {
+        "type": "string",
+        "description": "Optional X Access Token under 'Authentication Tokens' in https://console.x.com (leave blank to authorize in browser)."
+      },
+      "X_OAUTH_ACCESS_TOKEN_SECRET": {
+        "type": "string",
+        "description": "Optional X Access Token Secret under 'Authentication Tokens' in https://console.x.com (leave blank to authorize in browser)."
       }
     }
   },
@@ -32,7 +40,9 @@
       ],
       "env": {
         "X_OAUTH_CONSUMER_KEY": "${X_OAUTH_CONSUMER_KEY}",
-        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}"
+        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}",
+        "X_OAUTH_ACCESS_TOKEN": "${X_OAUTH_ACCESS_TOKEN}",
+        "X_OAUTH_ACCESS_TOKEN_SECRET": "${X_OAUTH_ACCESS_TOKEN_SECRET}"
       }
     }
   }

@@ -45,8 +45,8 @@ flowchart LR
 
 You can configure authentication in any of three ways, and all six agents share the resulting **macOS Keychain** entry (`@wezzard/mcp-x-articles`):
 
-1. **In-Browser GUI Setup (Works Inside Every GUI & CLI Agent):** Ask your agent to check auth or create a draft (`x_article_auth_status({ login: true })`). When keys are not yet in macOS Keychain, the server opens a local-only setup card in your browser (`127.0.0.1`), saves your **API Key** and **API Key Secret** straight to macOS Keychain without sending them to the LLM, and continues directly to X OAuth 1.0a consent.
-2. **IDE Plugin Settings Forms:** Antigravity (`customization://mcp-x-articles`) and Cursor (`.cursor-plugin/plugin.json` `variables`) also expose optional GUI fields for `X_OAUTH_CONSUMER_KEY` and `X_OAUTH_CONSUMER_SECRET`.
+1. **Native IDE Plugin Settings UI (Antigravity & Cursor):** In agents with a native MCP plugin configuration UI — such as Antigravity (`[X Articles](customization://x-articles)`) and Cursor (`.cursor-plugin/plugin.json` `variables`) — configure `X_OAUTH_CONSUMER_KEY`, `X_OAUTH_CONSUMER_SECRET`, and optionally `X_OAUTH_ACCESS_TOKEN` and `X_OAUTH_ACCESS_TOKEN_SECRET` directly in the plugin settings UI. The localhost `/setup` web form is never shown when a native host configuration UI is available.
+2. **In-Browser GUI Setup Fallback (For Agents Without a Native Plugin Settings UI):** In agents that do not provide a GUI for MCP plugin variables (Claude Code, Codex, pi, Claude Desktop), calling `x_article_auth_status({ login: true })` when keys are not yet in macOS Keychain opens a local-only setup card in your browser (`127.0.0.1`), saves your **API Key** and **API Key Secret** straight to macOS Keychain without sending them to the LLM, and continues directly to X OAuth 1.0a consent.
 3. **Terminal CLI Setup:** Run `npx -y @wezzard/mcp-x-articles auth` once in a terminal to store your keys in macOS Keychain and authorize in your browser.
 
 ## Install

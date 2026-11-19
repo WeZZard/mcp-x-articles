@@ -2,7 +2,12 @@ import { execFile } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { saveConsumerCredentials, type ConsumerCredentials, type CredentialSource } from './keychain.js';
+import {
+  detectHostConfigUi,
+  saveConsumerCredentials,
+  type ConsumerCredentials,
+  type CredentialSource,
+} from './keychain.js';
 
 function getOAuthBaseUrl(): string {
   return (process.env.X_OAUTH_BASE_URL ?? 'https://api.x.com').trim().replace(/\/+$/, '');
@@ -314,6 +319,13 @@ export async function runInteractiveSetupAndOAuth1Flow(options: {
 
   let creds: ConsumerCredentials | null = options.existingCredentials;
   let credSource: CredentialSource = options.existingCredentialSource;
+
+  const hostUi = detectHostConfigUi();
+  if (!creds && hostUi.hasNativeConfigUi) {
+    throw new Error(
+      `Missing X OAuth Consumer Key and Secret. The localhost web setup form is only used when the host agent has no native configuration UI. ${hostUi.setupInstruction}`,
+    );
+  }
   let activeReqToken = '';
   let activeReqSecret = '';
   let useOobMode = false;

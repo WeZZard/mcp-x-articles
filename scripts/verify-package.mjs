@@ -48,6 +48,15 @@ assert.ok(!cursorRaw.includes('X_BEARER_TOKEN'), '.cursor-plugin/plugin.json mus
 assert.ok(agyMcpRaw.includes('dist/server.mjs'));
 assert.ok(!agyMcpRaw.includes('xmcp-stdio.py'), 'mcp_config.json must not reference legacy Python script');
 assert.ok(!agyMcpRaw.includes('X_BEARER_TOKEN'), 'mcp_config.json must not include unused X_BEARER_TOKEN');
+for (const vName of [
+  'X_OAUTH_CONSUMER_KEY',
+  'X_OAUTH_CONSUMER_SECRET',
+  'X_OAUTH_ACCESS_TOKEN',
+  'X_OAUTH_ACCESS_TOKEN_SECRET',
+]) {
+  assert.ok(agyMcpRaw.includes(vName), `mcp_config.json must expose ${vName}`);
+  assert.ok(cursorRaw.includes(vName), `.cursor-plugin/plugin.json must expose ${vName}`);
+}
 
 // 3. Pack an actual npm tarball into an isolated temp directory, extract it, verify every
 //    required file is present with zero runtime dependencies, and run an MCP stdio handshake

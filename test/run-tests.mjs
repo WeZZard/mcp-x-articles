@@ -29,6 +29,7 @@ const {
   scanSensitiveFile,
   signOAuth1Header,
   runInteractiveSetupAndOAuth1Flow,
+  detectHostConfigUi,
   saveConsumerCredentials,
   loadConsumerCredentials,
   clearConsumerCredentials,
@@ -36,6 +37,13 @@ const {
   loadUserOAuthTokens,
   clearUserOAuthTokens,
 } = await import(serverBundlePath);
+
+// Ensure host IDE env vars from an outer Antigravity/Cursor session don't leak into standalone fallback tests.
+delete process.env.ANTIGRAVITY_VSCODE_HOST;
+delete process.env.ANTIGRAVITY_AUTH_SUCCESS_APP;
+delete process.env.PLUGIN_ROOT;
+delete process.env.PLUGIN_DATA;
+delete process.env.CURSOR_PLUGIN_ROOT;
 
 const mediaMap = JSON.parse(readFileSync(join(here, 'media-map.json'), 'utf8'));
 const fixturePath = join(here, 'fixture.md');
@@ -621,7 +629,37 @@ try {
     const persistedCreds = loadConsumerCredentials();
     assert.equal(persistedCreds.credentials.consumerKey, 'browser_ck');
     console.log('browser /setup + port-conflict random-port OOB fallback test: OK');
+
+    // --- 9. Native host configuration UI (Antigravity / Cursor) suppresses /setup Web UI ---
+    process.env.ANTIGRAVITY_VSCODE_HOST = '1';
+    process.env.PLUGIN_ROOT = '/Users/example/.gemini/config/plugins/x-articles';
+    process.env.X_OAUTH_CONSUMER_KEY = '${X_OAUTH_CONSUMER_KEY}';
+    process.env.X_OAUTH_CONSUMER_SECRET = '${X_OAUTH_CONSUMER_SECRET}';
+
+    const agyHost = detectHostConfigUi();
+    assert.equal(agyHost.hasNativeConfigUi, true);
+    assert.equal(agyHost.hostName, 'antigravity');
+    assert.equal(agyHost.configUiUrl, 'customization://x-articles');
+
+    // Even though browser_ck was saved to XDG/Keychain above, native UI mode must not silently fall back to it
+    // when the native plugin configuration fields are empty.
+    const nativeCreds = loadConsumerCredentials();
+    assert.equal(nativeCreds.credentials, null);
+    assert.equal(nativeCreds.source, 'none');
+
+    await assert.rejects(
+      () =>
+        runInteractiveSetupAndOAuth1Flow({
+          existingCredentials: null,
+          existingCredentialSource: 'none',
+        }),
+      /customization:\/\/x-articles/,
+      'Native host UI must block the localhost /setup web form when credentials are not configured',
+    );
+    console.log('native host configuration UI detection & /setup suppression test: OK');
   } finally {
+    delete process.env.ANTIGRAVITY_VSCODE_HOST;
+    delete process.env.PLUGIN_ROOT;
     blocker.close();
     mockOAuthServer.close();
     for (const [k, v] of Object.entries(prevEnvSnapshot)) {

@@ -8,18 +8,30 @@
       "cwd": ".",
       "env": {
         "X_OAUTH_CONSUMER_KEY": "${X_OAUTH_CONSUMER_KEY}",
-        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}"
+        "X_OAUTH_CONSUMER_SECRET": "${X_OAUTH_CONSUMER_SECRET}",
+        "X_OAUTH_ACCESS_TOKEN": "${X_OAUTH_ACCESS_TOKEN}",
+        "X_OAUTH_ACCESS_TOKEN_SECRET": "${X_OAUTH_ACCESS_TOKEN_SECRET}"
       },
       "variables": [
         {
           "name": "X_OAUTH_CONSUMER_KEY",
-          "title": "X OAuth Consumer Key (Optional — leave blank to use Browser Setup / macOS Keychain)",
-          "description": "API Key (Consumer Key) from https://console.x.com -> Apps -> Keys and tokens."
+          "title": "X API Key (Consumer Key)",
+          "description": "API Key under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
         },
         {
           "name": "X_OAUTH_CONSUMER_SECRET",
-          "title": "X OAuth Consumer Secret (Optional — leave blank to use Browser Setup / macOS Keychain)",
-          "description": "API Key Secret (Consumer Secret) from https://console.x.com -> Apps -> Keys and tokens."
+          "title": "X API Key Secret (Consumer Secret)",
+          "description": "API Key Secret under 'Consumer Keys' in https://console.x.com -> Apps -> Keys and tokens."
+        },
+        {
+          "name": "X_OAUTH_ACCESS_TOKEN",
+          "title": "X Access Token (Optional — leave blank to authorize in browser)",
+          "description": "Access Token with Read and Write permissions under 'Authentication Tokens' in https://console.x.com -> Apps -> Keys and tokens."
+        },
+        {
+          "name": "X_OAUTH_ACCESS_TOKEN_SECRET",
+          "title": "X Access Token Secret (Optional — leave blank to authorize in browser)",
+          "description": "Access Token Secret with Read and Write permissions under 'Authentication Tokens' in https://console.x.com -> Apps -> Keys and tokens."
         }
       ]
     }

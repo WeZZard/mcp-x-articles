@@ -29,6 +29,54 @@ export interface ResolvedCredentials {
   source: CredentialSource;
 }
 
+export interface HostConfigUiInfo {
+  hasNativeConfigUi: boolean;
+  hostName: 'antigravity' | 'cursor' | 'none';
+  configUiUrl: string | null;
+  setupInstruction: string;
+}
+
+export function detectHostConfigUi(): HostConfigUiInfo {
+  const pluginRoot = (process.env.PLUGIN_ROOT ?? '').trim();
+  const pluginData = (process.env.PLUGIN_DATA ?? '').trim();
+  const isAntigravity =
+    process.env.ANTIGRAVITY_VSCODE_HOST === '1' ||
+    Boolean((process.env.ANTIGRAVITY_AUTH_SUCCESS_APP ?? '').trim()) ||
+    Boolean(pluginRoot) ||
+    Boolean(pluginData);
+
+  if (isAntigravity) {
+    const baseSource = pluginRoot || pluginData;
+    const segments = baseSource.replace(/\/+$/, '').split('/').filter(Boolean);
+    const dir = segments[segments.length - 1] || 'x-articles';
+    const configUiUrl = `customization://${dir}`;
+    return {
+      hasNativeConfigUi: true,
+      hostName: 'antigravity',
+      configUiUrl,
+      setupInstruction: `Open Antigravity's MCP plugin configuration UI at [X Articles](${configUiUrl}) and configure X_OAUTH_CONSUMER_KEY and X_OAUTH_CONSUMER_SECRET (and optionally X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET).`,
+    };
+  }
+
+  if ((process.env.CURSOR_PLUGIN_ROOT ?? '').trim()) {
+    return {
+      hasNativeConfigUi: true,
+      hostName: 'cursor',
+      configUiUrl: null,
+      setupInstruction:
+        "Open Cursor's MCP plugin settings UI and configure X_OAUTH_CONSUMER_KEY and X_OAUTH_CONSUMER_SECRET (and optionally X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET).",
+    };
+  }
+
+  return {
+    hasNativeConfigUi: false,
+    hostName: 'none',
+    configUiUrl: null,
+    setupInstruction:
+      'Call `x_article_auth_status({ login: true })` to open the local browser setup form (saves API Key and Secret directly to macOS Keychain and completes X OAuth), or run `npx @wezzard/mcp-x-articles auth` in a terminal.',
+  };
+}
+
 function cleanEnvValue(raw: string | undefined): string {
   const val = (raw ?? '').trim();
   if (!val || val.startsWith('${')) return '';
@@ -142,6 +190,16 @@ export function loadConsumerCredentials(): ResolvedCredentials {
       },
       source: 'env',
     };
+  }
+
+  // When running inside a host agent that provides a native MCP plugin configuration UI
+  // (e.g. Antigravity or Cursor), consumer credentials must be configured through that UI
+  // rather than falling back to a separate Keychain/XDG entry.
+  if (
+    detectHostConfigUi().hasNativeConfigUi &&
+    process.env.MCP_X_ARTICLES_ALLOW_KEYCHAIN_IN_NATIVE_UI !== '1'
+  ) {
+    return { credentials: null, source: 'none' };
   }
 
   const kcRaw = keychainRead(CONSUMER_ACCOUNT);

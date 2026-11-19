@@ -9,7 +9,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { convertMarkdownFile, type MediaMap } from './converter.js';
-import { loadConsumerCredentials, loadUserOAuthTokens } from './keychain.js';
+import { detectHostConfigUi, loadConsumerCredentials, loadUserOAuthTokens } from './keychain.js';
 import {
   computePreflightToken,
   resolveCoverImagePath,
@@ -272,16 +272,21 @@ export function createMcpServer(): Server {
       if (name === 'x_article_auth_status') {
         const login = Boolean(args.login);
         const verify = args.verify !== false;
+        const hostUi = detectHostConfigUi();
 
         const { credentials, source: credentialSource } = loadConsumerCredentials();
-        if (!credentials && !login) {
-          return jsonToolResult({
-            configured: false,
-            credential_source: 'none',
-            token_cached: false,
-            setup_hint:
-              'Call `x_article_auth_status({ login: true })` to open the local browser setup form (saves API Key and Secret directly to macOS Keychain and completes X OAuth), or run `npx @wezzard/mcp-x-articles auth` in a terminal.',
-          });
+        if (!credentials) {
+          // Never open the localhost /setup web form when the host agent has a native plugin configuration UI.
+          if (hostUi.hasNativeConfigUi || !login) {
+            return jsonToolResult({
+              configured: false,
+              credential_source: 'none',
+              token_cached: false,
+              has_native_config_ui: hostUi.hasNativeConfigUi,
+              native_config_ui_url: hostUi.configUiUrl,
+              setup_hint: hostUi.setupInstruction,
+            });
+          }
         }
 
         if (credentials) {
@@ -292,8 +297,11 @@ export function createMcpServer(): Server {
               credential_source: credentialSource,
               token_cached: false,
               token_source: 'none',
-              setup_hint:
-                'Consumer credentials found, but no user OAuth 1.0a token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser.',
+              has_native_config_ui: hostUi.hasNativeConfigUi,
+              native_config_ui_url: hostUi.configUiUrl,
+              setup_hint: hostUi.hasNativeConfigUi
+                ? `Consumer credentials found (${credentialSource}), but no user OAuth 1.0a Access Token is configured yet. Either configure X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize your account on x.com in your browser.`
+                : 'Consumer credentials found, but no user OAuth 1.0a token is cached yet. Call `x_article_auth_status({ login: true })` to authorize in your browser.',
             });
           }
         }
@@ -308,6 +316,8 @@ export function createMcpServer(): Server {
           credential_source: session.credentialSource,
           token_cached: true,
           token_source: session.tokenSource,
+          has_native_config_ui: hostUi.hasNativeConfigUi,
+          native_config_ui_url: hostUi.configUiUrl,
           verified: verify,
           authenticated_user: session.user ?? null,
         });

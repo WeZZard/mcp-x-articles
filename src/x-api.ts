@@ -3,6 +3,7 @@ import { extname, resolve } from 'node:path';
 import type { ContentState } from './converter.js';
 import {
   clearUserOAuthTokens,
+  detectHostConfigUi,
   loadConsumerCredentials,
   loadUserOAuthTokens,
   saveUserOAuthTokens,
@@ -135,14 +136,19 @@ export async function ensureAuthenticatedSession(options: {
   }
 
   if (!credentials || !tokens) {
+    const hostUi = detectHostConfigUi();
+    if (!credentials && hostUi.hasNativeConfigUi) {
+      throw new Error(`Missing X OAuth Consumer Key and Secret. ${hostUi.setupInstruction}`);
+    }
+
     if (!options.allowInteractiveLogin) {
       if (!credentials) {
-        throw new Error(
-          'Missing X OAuth Consumer Key and Secret. Call `x_article_auth_status({ login: true })` to open the local browser Keychain setup page, or run `npx @wezzard/mcp-x-articles auth`.',
-        );
+        throw new Error(`Missing X OAuth Consumer Key and Secret. ${hostUi.setupInstruction}`);
       }
       throw new Error(
-        'No cached OAuth 1.0a user token found. Call `x_article_auth_status({ login: true })` or run `npx @wezzard/mcp-x-articles auth` to authorize in your browser.',
+        hostUi.hasNativeConfigUi
+          ? `No user OAuth 1.0a token is configured yet. Either configure X_OAUTH_ACCESS_TOKEN and X_OAUTH_ACCESS_TOKEN_SECRET in ${hostUi.configUiUrl ? `[X Articles](${hostUi.configUiUrl})` : "your host's MCP plugin configuration UI"}, or call \`x_article_auth_status({ login: true })\` to authorize in your browser.`
+          : 'No cached OAuth 1.0a user token found. Call `x_article_auth_status({ login: true })` or run `npx @wezzard/mcp-x-articles auth` to authorize in your browser.',
       );
     }
 
