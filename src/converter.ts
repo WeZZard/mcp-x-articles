@@ -45,16 +45,25 @@ export interface ContentState {
   entities: ContentStateEntity[];
 }
 
+export interface ExtractedLink {
+  href: string;
+  text: string;
+  is_relative: boolean;
+  is_x_url: boolean;
+}
+
 export interface ConversionResult {
   title: string;
   content_state: ContentState;
   pending_images: string[];
+  links: ExtractedLink[];
   warnings: string[];
 }
 
 export interface ConvertOptions {
   explicitTitle?: string;
   mediaMap?: MediaMap;
+  linkRewrites?: Record<string, string>;
   fallbackFilename?: string;
 }
 
@@ -83,6 +92,7 @@ export function markdownToContentState(rawMarkdown: string, options: ConvertOpti
 
   const warnings: string[] = [];
   const pendingImages: string[] = [];
+  const links: ExtractedLink[] = [];
   const entities: ContentStateEntity[] = [];
   const blocks: ContentStateBlock[] = [];
 
@@ -127,8 +137,25 @@ export function markdownToContentState(rawMarkdown: string, options: ConvertOpti
           const start = state.text.length;
           walkInline(linkTok.tokens ?? [], state);
           const length = state.text.length - start;
+          const anchorText = state.text.slice(start);
+          const rawHref = linkTok.href;
+          const isXUrl = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i.test(rawHref);
+          const isRelative = !/^(?:https?:|mailto:|tel:|#)/i.test(rawHref);
+          links.push({
+            href: rawHref,
+            text: anchorText,
+            is_relative: isRelative,
+            is_x_url: isXUrl,
+          });
+          const rewritten = options.linkRewrites?.[rawHref];
+          const targetUrl = rewritten ?? rawHref;
+          if (isRelative && !rewritten) {
+            warnings.push(
+              `relative-link: "${rawHref}" is a local/relative link and will break on X Articles unless rewritten via link_rewrites.`,
+            );
+          }
           if (length > 0) {
-            const key = addEntity({ type: 'link', mutability: 'mutable', data: { url: linkTok.href } });
+            const key = addEntity({ type: 'link', mutability: 'mutable', data: { url: targetUrl } });
             state.entityRanges.push({ key, offset: start, length });
           }
           break;
@@ -324,6 +351,7 @@ export function markdownToContentState(rawMarkdown: string, options: ConvertOpti
     title,
     content_state: { blocks, entities },
     pending_images: [...new Set(pendingImages)],
+    links,
     warnings: [...new Set(warnings)],
   };
 }

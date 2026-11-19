@@ -117,6 +117,7 @@ try {
     toolsRes.tools.map((t) => t.name),
     [
       'x_article_auth_status',
+      'x_article_list_published',
       'x_article_preflight',
       'x_article_create_draft',
       'x_article_publish',

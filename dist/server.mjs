@@ -2982,7 +2982,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve5.call(this, root, ref);
+      let _sch = resolve6.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3009,7 +3009,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve5(root, ref) {
+    function resolve6(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3873,7 +3873,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve5(baseURI, relativeURI, options) {
+    function resolve6(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4264,7 +4264,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve5,
+      resolve: resolve6,
       resolveComponent,
       equal,
       serialize,
@@ -8107,8 +8107,8 @@ async function runInteractiveSetupAndOAuth2Flow(options) {
 }
 
 // src/server.ts
-import { existsSync as existsSync3, readFileSync as readFileSync6, statSync as statSync2 } from "node:fs";
-import { dirname as dirname3, resolve as resolve4 } from "node:path";
+import { existsSync as existsSync4, readFileSync as readFileSync7, statSync as statSync3 } from "node:fs";
+import { dirname as dirname4, resolve as resolve5 } from "node:path";
 
 // node_modules/zod/v4/core/util.js
 var util_exports = {};
@@ -11461,7 +11461,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve5) {
+function isRecursive(inst, stack, resolve6) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -11471,7 +11471,7 @@ function isRecursive(inst, stack, resolve5) {
   let result = NONE;
   const check = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve5);
+      const answer = isRecursive(child, stack, resolve6);
       if (answer > result)
         result = answer;
     }
@@ -11482,7 +11482,7 @@ function isRecursive(inst, stack, resolve5) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve5) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve6) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -11546,7 +11546,7 @@ function isRecursive(inst, stack, resolve5) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve5 ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve6 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -16648,7 +16648,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+        await new Promise((resolve6) => setTimeout(resolve6, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -16665,7 +16665,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -16743,7 +16743,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve5(parseResult.data);
+            resolve6(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -17005,12 +17005,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve5, interval);
+      const timeoutId = setTimeout(resolve6, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -17886,12 +17886,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve6) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve5();
+        resolve6();
       } else {
-        this._stdout.once("drain", resolve5);
+        this._stdout.once("drain", resolve6);
       }
     });
   }
@@ -19157,6 +19157,7 @@ function markdownToContentState(rawMarkdown, options = {}) {
   }
   const warnings = [];
   const pendingImages = [];
+  const links = [];
   const entities = [];
   const blocks = [];
   let nextKey = 0;
@@ -19197,8 +19198,25 @@ function markdownToContentState(rawMarkdown, options = {}) {
           const start = state.text.length;
           walkInline(linkTok.tokens ?? [], state);
           const length = state.text.length - start;
+          const anchorText = state.text.slice(start);
+          const rawHref = linkTok.href;
+          const isXUrl = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i.test(rawHref);
+          const isRelative = !/^(?:https?:|mailto:|tel:|#)/i.test(rawHref);
+          links.push({
+            href: rawHref,
+            text: anchorText,
+            is_relative: isRelative,
+            is_x_url: isXUrl
+          });
+          const rewritten = options.linkRewrites?.[rawHref];
+          const targetUrl = rewritten ?? rawHref;
+          if (isRelative && !rewritten) {
+            warnings.push(
+              `relative-link: "${rawHref}" is a local/relative link and will break on X Articles unless rewritten via link_rewrites.`
+            );
+          }
           if (length > 0) {
-            const key = addEntity({ type: "link", mutability: "mutable", data: { url: linkTok.href } });
+            const key = addEntity({ type: "link", mutability: "mutable", data: { url: targetUrl } });
             state.entityRanges.push({ key, offset: start, length });
           }
           break;
@@ -19381,6 +19399,7 @@ function markdownToContentState(rawMarkdown, options = {}) {
     title,
     content_state: { blocks, entities },
     pending_images: [...new Set(pendingImages)],
+    links,
     warnings: [...new Set(warnings)]
   };
 }
@@ -19392,14 +19411,358 @@ function convertMarkdownFile(markdownPath, options = {}) {
   });
 }
 
+// src/link-resolver.ts
+import { existsSync as existsSync2, readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
+import { dirname, extname, resolve } from "node:path";
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "to",
+  "for",
+  "of",
+  "in",
+  "on",
+  "at",
+  "and",
+  "or",
+  "my",
+  "your",
+  "our",
+  "with",
+  "how",
+  "why",
+  "what",
+  "from",
+  "by",
+  "as",
+  "is",
+  "are",
+  "this",
+  "that",
+  "post",
+  "posts",
+  "article",
+  "articles",
+  "blog",
+  "more",
+  "here",
+  "read",
+  "link",
+  "index",
+  "html",
+  "md",
+  "mdx",
+  "http",
+  "https",
+  "www",
+  "com",
+  "org",
+  "net",
+  "zh",
+  "hans",
+  "hant",
+  "en"
+]);
+var GENERIC_SLUG_SEGMENTS = /* @__PURE__ */ new Set([
+  "post",
+  "posts",
+  "article",
+  "articles",
+  "blog",
+  "en",
+  "zh",
+  "zh-hans",
+  "zh-hant",
+  "zh-cn",
+  "zh-tw",
+  "index",
+  "readme"
+]);
+function detectTextScript(text) {
+  const cjkMatches = text.match(/[\u4e00-\u9fff]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  if (cjkCount >= 2) return "cjk";
+  const latinMatches = text.match(/[a-zA-Z]/g);
+  const latinCount = latinMatches ? latinMatches.length : 0;
+  if (latinCount >= 2) return "latin";
+  return "mixed";
+}
+function detectHrefScriptHint(href) {
+  const lower = href.toLowerCase();
+  if (/\/(?:zh-hans|zh-hant|zh-cn|zh-tw|zh)\b/.test(lower)) {
+    return "cjk";
+  }
+  return null;
+}
+function normalizeMatchText(text) {
+  return text.normalize("NFKC").toLowerCase().replace(/[\p{P}\p{S}]+/gu, " ").replace(/\s+/g, " ").trim();
+}
+function normalizeCompact(text) {
+  return normalizeMatchText(text).replace(/\s+/g, "");
+}
+function extractTokenSet(text) {
+  const normalized = normalizeMatchText(text);
+  const wordTokens = /* @__PURE__ */ new Set();
+  const latinOrDigits = normalized.match(/[a-z0-9]+/g) ?? [];
+  for (const tok of latinOrDigits) {
+    if (STOPWORDS.has(tok)) continue;
+    wordTokens.add(tok);
+  }
+  const cjkBigrams = /* @__PURE__ */ new Set();
+  const cjkRuns = normalized.match(/[\u4e00-\u9fff]+/g) ?? [];
+  for (const run of cjkRuns) {
+    if (run.length === 1) {
+      cjkBigrams.add(run);
+    } else {
+      for (let i = 0; i < run.length - 1; i += 1) {
+        cjkBigrams.add(run.slice(i, i + 2));
+      }
+    }
+  }
+  return { wordTokens, cjkBigrams };
+}
+function extractSlugTokens(href) {
+  let pathname = href;
+  try {
+    pathname = new URL(href).pathname;
+  } catch {
+    pathname = href.split(/[?#]/)[0];
+  }
+  const rawSegments = pathname.split("/").map((s) => s.trim()).filter(Boolean);
+  const tokens = [];
+  for (const seg of rawSegments) {
+    const cleanExt = seg.replace(/\.(?:html?|mdx?)$/i, "");
+    const lower = cleanExt.toLowerCase();
+    if (!lower || GENERIC_SLUG_SEGMENTS.has(lower) || /^\d{1,4}$/.test(lower)) {
+      continue;
+    }
+    const stripped = lower.replace(/^\d{4}-\d{2}-\d{2}-/, "").replace(/-[0-9a-f]{4,8}$/i, "");
+    for (const part of stripped.split(/[-_.]+/)) {
+      if (!part || STOPWORDS.has(part)) continue;
+      tokens.push(part);
+    }
+  }
+  return tokens;
+}
+function extractLocalMarkdownTitle(markdownPath, relativeHref) {
+  const cleanHref = relativeHref.split(/[?#]/)[0].trim();
+  if (!cleanHref) return null;
+  const baseDir = dirname(resolve(markdownPath));
+  const candidate = resolve(baseDir, cleanHref);
+  const tryFiles = [];
+  if (existsSync2(candidate)) {
+    try {
+      const st2 = statSync2(candidate);
+      if (st2.isFile()) {
+        tryFiles.push(candidate);
+      } else if (st2.isDirectory()) {
+        tryFiles.push(resolve(candidate, "index.md"));
+        tryFiles.push(resolve(candidate, "index.mdx"));
+      }
+    } catch {
+      return null;
+    }
+  } else {
+    if (!extname(candidate)) {
+      tryFiles.push(`${candidate}.md`, `${candidate}.mdx`);
+      tryFiles.push(resolve(candidate, "index.md"));
+    }
+  }
+  for (const targetFile of tryFiles) {
+    if (!existsSync2(targetFile)) continue;
+    try {
+      const raw = readFileSync3(targetFile, "utf8");
+      const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(raw);
+      if (fmMatch) {
+        const titleLine = /^title:\s*["']?(.*?)["']?\s*$/m.exec(fmMatch[1]);
+        if (titleLine?.[1]?.trim()) {
+          return titleLine[1].trim();
+        }
+      }
+      const body = fmMatch ? raw.slice(fmMatch[0].length) : raw;
+      const h1Match = /^#\s+(.+?)\s*$/m.exec(body);
+      if (h1Match?.[1]?.trim()) {
+        return h1Match[1].trim();
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+function isScriptCompatible(candidateScript, articleScript) {
+  if (candidateScript === "mixed" || articleScript === "mixed") return true;
+  return candidateScript === articleScript;
+}
+function scoreCandidateAgainstArticle(options) {
+  if (!isScriptCompatible(options.candidateScript, options.articleScript)) {
+    return null;
+  }
+  const candNorm = normalizeMatchText(options.candidateText);
+  const artNorm = normalizeMatchText(options.articleTitle);
+  const candCompact = normalizeCompact(options.candidateText);
+  const artCompact = normalizeCompact(options.articleTitle);
+  if (!candNorm || !artNorm) return null;
+  if (!options.isSlugCandidate && (candNorm === artNorm || candCompact === artCompact)) {
+    return { reason: "exact-title", confidence: 1 };
+  }
+  if (!options.isSlugCandidate) {
+    const shorter = candCompact.length <= artCompact.length ? candCompact : artCompact;
+    const longer = candCompact.length <= artCompact.length ? artCompact : candCompact;
+    if (shorter.length >= 6 && longer.includes(shorter)) {
+      const ratio = shorter.length / longer.length;
+      if (ratio >= 0.45) {
+        return { reason: "title-substring", confidence: 0.9 };
+      }
+    }
+  }
+  const candTokens = extractTokenSet(options.candidateText);
+  const artTokens = extractTokenSet(options.articleTitle);
+  const wordMatches = [...candTokens.wordTokens].filter((t) => artTokens.wordTokens.has(t));
+  const cjkMatches = [...candTokens.cjkBigrams].filter((t) => artTokens.cjkBigrams.has(t));
+  const candTotal = candTokens.wordTokens.size + candTokens.cjkBigrams.size;
+  const artTotal = artTokens.wordTokens.size + artTokens.cjkBigrams.size;
+  const matchedTotal = wordMatches.length + cjkMatches.length;
+  if (candTotal === 0 || artTotal === 0) return null;
+  const hasEnoughEvidence = cjkMatches.length >= 3 || wordMatches.length >= 2 || matchedTotal >= 2 && candTotal >= 2 && artTotal >= 2;
+  if (!hasEnoughEvidence) return null;
+  const precision = matchedTotal / candTotal;
+  const recall = matchedTotal / artTotal;
+  const f1 = 2 * precision * recall / (precision + recall);
+  if (f1 >= 0.62) {
+    const confidence = Math.min(0.88, Math.round(f1 * 100) / 100);
+    return {
+      reason: options.isSlugCandidate ? "slug-match" : "token-overlap",
+      confidence
+    };
+  }
+  return null;
+}
+function filterPublishedXArticles(articles, query) {
+  const trimmed = (query ?? "").trim();
+  if (!trimmed) return articles.slice();
+  const qNorm = normalizeMatchText(trimmed);
+  const qCompact = normalizeCompact(trimmed);
+  const qTokens = extractTokenSet(trimmed);
+  return articles.filter((art) => {
+    const titleNorm = normalizeMatchText(art.title);
+    const titleCompact = normalizeCompact(art.title);
+    const previewNorm = normalizeMatchText(art.preview_text ?? "");
+    if (titleNorm.includes(qNorm) || titleCompact.includes(qCompact) || previewNorm && previewNorm.includes(qNorm)) {
+      return true;
+    }
+    const artTokens = extractTokenSet(art.title);
+    const matches = [...qTokens.wordTokens].filter((t) => artTokens.wordTokens.has(t)).length + [...qTokens.cjkBigrams].filter((t) => artTokens.cjkBigrams.has(t)).length;
+    const total = qTokens.wordTokens.size + qTokens.cjkBigrams.size;
+    return total > 0 && matches >= Math.min(2, total);
+  });
+}
+function matchLinksToPublishedArticles(options) {
+  const grouped = /* @__PURE__ */ new Map();
+  for (const link of options.links) {
+    const rawHref = link.href.trim();
+    if (!rawHref || link.is_x_url || /^(?:mailto:|tel:|#)/i.test(rawHref)) {
+      continue;
+    }
+    const existing = grouped.get(rawHref);
+    if (existing) {
+      existing.occurrences += 1;
+      if (link.text.trim()) existing.anchorTexts.add(link.text.trim());
+    } else {
+      const anchors = /* @__PURE__ */ new Set();
+      if (link.text.trim()) anchors.add(link.text.trim());
+      grouped.set(rawHref, {
+        href: rawHref,
+        anchorTexts: anchors,
+        occurrences: 1,
+        isRelative: link.is_relative
+      });
+    }
+  }
+  const normalizedSourceTitle = options.sourceTitle ? normalizeCompact(options.sourceTitle) : "";
+  const suggestions = [];
+  const unresolvedLocalLinks = [];
+  for (const entry of grouped.values()) {
+    const resolvedLocalTitle = entry.isRelative ? extractLocalMarkdownTitle(options.markdownPath, entry.href) : null;
+    const anchorArray = [...entry.anchorTexts];
+    const hrefScriptHint = detectHrefScriptHint(entry.href);
+    const titleOrAnchorScript = detectTextScript(
+      resolvedLocalTitle ?? anchorArray.join(" ")
+    );
+    const effectiveScript = hrefScriptHint ?? (titleOrAnchorScript !== "mixed" ? titleOrAnchorScript : options.sourceTitle ? detectTextScript(options.sourceTitle) : "mixed");
+    const candidates = [];
+    if (resolvedLocalTitle) {
+      candidates.push({ text: resolvedLocalTitle, isSlug: false });
+    }
+    for (const anchor2 of anchorArray) {
+      candidates.push({ text: anchor2, isSlug: false });
+    }
+    const slugTokens = extractSlugTokens(entry.href);
+    if (slugTokens.length > 0) {
+      candidates.push({ text: slugTokens.join(" "), isSlug: true });
+    }
+    let best = null;
+    for (const article of options.publishedArticles) {
+      if (normalizedSourceTitle && normalizeCompact(article.title) === normalizedSourceTitle) {
+        continue;
+      }
+      const articleScript = detectTextScript(article.title);
+      for (const cand of candidates) {
+        const res = scoreCandidateAgainstArticle({
+          candidateText: cand.text,
+          isSlugCandidate: cand.isSlug,
+          articleTitle: article.title,
+          candidateScript: effectiveScript,
+          articleScript
+        });
+        if (!res) continue;
+        if (!best || res.confidence > best.score.confidence) {
+          best = { article, score: res };
+        }
+      }
+    }
+    if (best) {
+      const suggestedUrl = best.article.post_url || best.article.article_url || "";
+      if (suggestedUrl) {
+        suggestions.push({
+          original_href: entry.href,
+          anchor_texts: anchorArray,
+          occurrences: entry.occurrences,
+          is_relative: entry.isRelative,
+          resolved_source_title: resolvedLocalTitle,
+          suggested_url: suggestedUrl,
+          matched_article_id: best.article.article_id,
+          matched_post_id: best.article.post_id,
+          matched_title: best.article.title,
+          matched_article_url: best.article.article_url,
+          matched_post_url: best.article.post_url,
+          match_reason: best.score.reason,
+          confidence: best.score.confidence
+        });
+        continue;
+      }
+    }
+    if (entry.isRelative) {
+      unresolvedLocalLinks.push({
+        original_href: entry.href,
+        anchor_texts: anchorArray,
+        occurrences: entry.occurrences,
+        resolved_source_title: resolvedLocalTitle,
+        reason: options.publishedArticles.length === 0 ? "No published X Articles found or timeline lookup unavailable; pass `link_rewrites` manually or keep external URL." : "Relative/local link does not match any published X Article on this account and will break on X Articles unless rewritten via `link_rewrites`."
+      });
+    }
+  }
+  return { suggestions, unresolved_local_links: unresolvedLocalLinks };
+}
+
 // src/preflight-token.ts
 import { createHash as createHash3, timingSafeEqual } from "node:crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync4 } from "node:fs";
-import { dirname as dirname2, resolve as resolve2 } from "node:path";
+import { existsSync as existsSync3, readFileSync as readFileSync5 } from "node:fs";
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
 
 // src/scanner.ts
-import { readFileSync as readFileSync3 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync as readFileSync4 } from "node:fs";
+import { dirname as dirname2, resolve as resolve2 } from "node:path";
 var PATTERNS = [
   { kind: "x-bearer-token", re: /AAAAAA[A-Za-z0-9%]{20,}/g },
   { kind: "github-token", re: /\b(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b/g },
@@ -19464,18 +19827,18 @@ function isRemoteUrl(src) {
   return /^https?:\/\//i.test(src);
 }
 function scanSensitiveFile(markdownPath, alsoPaths = []) {
-  const absMd = resolve(markdownPath);
-  const mdDir = dirname(absMd);
-  const mdText = readFileSync3(absMd, "utf8");
+  const absMd = resolve2(markdownPath);
+  const mdDir = dirname2(absMd);
+  const mdText = readFileSync4(absMd, "utf8");
   const findings = [...scanText(mdText, markdownPath)];
   for (const extra of alsoPaths) {
-    findings.push(...scanText(readFileSync3(resolve(extra), "utf8"), extra));
+    findings.push(...scanText(readFileSync4(resolve2(extra), "utf8"), extra));
   }
   const srcs = extractMarkdownImageSrcs(mdText);
   const resolvedImages = srcs.map((src) => ({
     src,
     is_remote: isRemoteUrl(src),
-    resolved_path: isRemoteUrl(src) ? src : resolve(mdDir, src)
+    resolved_path: isRemoteUrl(src) ? src : resolve2(mdDir, src)
   }));
   return {
     findings,
@@ -19494,43 +19857,43 @@ function resolveCoverImagePath(markdownPath, explicitCoverPath, omitCover) {
     if (isRemoteUrl(explicitCoverPath.trim())) {
       return explicitCoverPath.trim();
     }
-    const resolved = resolve2(dirname2(resolve2(markdownPath)), explicitCoverPath.trim());
-    if (existsSync2(resolved)) return resolved;
-    return resolve2(explicitCoverPath.trim());
+    const resolved = resolve3(dirname3(resolve3(markdownPath)), explicitCoverPath.trim());
+    if (existsSync3(resolved)) return resolved;
+    return resolve3(explicitCoverPath.trim());
   }
-  const siblingCover = resolve2(dirname2(resolve2(markdownPath)), "cover-image-x-article.png");
-  if (existsSync2(siblingCover)) {
+  const siblingCover = resolve3(dirname3(resolve3(markdownPath)), "cover-image-x-article.png");
+  if (existsSync3(siblingCover)) {
     return siblingCover;
   }
   return void 0;
 }
 function computePreflightToken(input) {
-  const absMd = resolve2(input.markdownPath);
-  const mdDir = dirname2(absMd);
-  if (!existsSync2(absMd)) {
+  const absMd = resolve3(input.markdownPath);
+  const mdDir = dirname3(absMd);
+  if (!existsSync3(absMd)) {
     throw new Error(`Markdown file not found: ${absMd}`);
   }
-  const mdHash = sha256Bytes(readFileSync4(absMd));
+  const mdHash = sha256Bytes(readFileSync5(absMd));
   const imageFingerprints = input.inlineImageSrcs.map((src) => {
     if (isRemoteUrl(src)) {
       return { src, kind: "remote", hash: sha256Bytes(src) };
     }
-    const imgPath = resolve2(mdDir, src);
-    if (!existsSync2(imgPath)) {
+    const imgPath = resolve3(mdDir, src);
+    if (!existsSync3(imgPath)) {
       throw new Error(`Referenced local image not found: ${src} (expected at ${imgPath})`);
     }
-    return { src, kind: "local", path: imgPath, hash: sha256Bytes(readFileSync4(imgPath)) };
+    return { src, kind: "local", path: imgPath, hash: sha256Bytes(readFileSync5(imgPath)) };
   });
   let coverFingerprint = null;
   if (input.coverImagePath) {
     if (isRemoteUrl(input.coverImagePath)) {
       coverFingerprint = { kind: "remote", url: input.coverImagePath, hash: sha256Bytes(input.coverImagePath) };
     } else {
-      const absCover = resolve2(input.coverImagePath);
-      if (!existsSync2(absCover)) {
+      const absCover = resolve3(input.coverImagePath);
+      if (!existsSync3(absCover)) {
         throw new Error(`Cover image not found: ${absCover}`);
       }
-      coverFingerprint = { kind: "local", path: absCover, hash: sha256Bytes(readFileSync4(absCover)) };
+      coverFingerprint = { kind: "local", path: absCover, hash: sha256Bytes(readFileSync5(absCover)) };
     }
   }
   const canonicalPayload = JSON.stringify({
@@ -19553,13 +19916,13 @@ function verifyPreflightToken(providedToken, input) {
 }
 
 // src/x-api.ts
-import { readFileSync as readFileSync5 } from "node:fs";
-import { extname, resolve as resolve3 } from "node:path";
+import { readFileSync as readFileSync6 } from "node:fs";
+import { extname as extname2, resolve as resolve4 } from "node:path";
 var CHUNK_SIZE_BYTES = 25e5;
 var REFRESH_BUFFER_SECONDS = 300;
 function guessMediaType(pathOrUrl) {
   const clean = pathOrUrl.split("?")[0].split("#")[0];
-  const ext = extname(clean).toLowerCase();
+  const ext = extname2(clean).toLowerCase();
   const mapping = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -19891,9 +20254,9 @@ async function loadImageBytes(pathOrUrl) {
       displaySource: pathOrUrl
     };
   }
-  const abs = resolve3(pathOrUrl);
+  const abs = resolve4(pathOrUrl);
   return {
-    bytes: readFileSync5(abs),
+    bytes: readFileSync6(abs),
     mediaType: guessMediaType(abs),
     displaySource: abs
   };
@@ -20026,6 +20389,137 @@ async function publishXArticle(options) {
     raw: resp.data
   };
 }
+var PUBLISHED_ARTICLES_CACHE_TTL_MS = 5 * 60 * 1e3;
+var publishedArticlesCache = /* @__PURE__ */ new Map();
+function clearPublishedXArticlesCache() {
+  publishedArticlesCache.clear();
+}
+function parseArticleFromTimelineTweet(tweet, username) {
+  const articleObj = tweet.article && typeof tweet.article === "object" ? tweet.article : void 0;
+  const articleTitleObj = tweet.article_title && typeof tweet.article_title === "object" ? tweet.article_title : void 0;
+  const articleTitleStr = typeof tweet.article_title === "string" && tweet.article_title.trim() ? tweet.article_title.trim() : void 0;
+  const matchingArticleUrlEntity = tweet.entities?.urls?.find(
+    (u) => /\/(?:i\/)?article\/(\d+)/i.test(u.expanded_url ?? "")
+  );
+  const hasArticleMetadata = Boolean(
+    articleObj || articleTitleObj || articleTitleStr || matchingArticleUrlEntity
+  );
+  if (!hasArticleMetadata) {
+    return null;
+  }
+  let articleId = null;
+  const rawArticleId = articleObj?.id ?? articleObj?.rest_id ?? articleTitleObj?.id ?? articleTitleObj?.rest_id;
+  if (typeof rawArticleId === "string" && rawArticleId.trim()) {
+    articleId = rawArticleId.trim();
+  } else if (matchingArticleUrlEntity?.expanded_url) {
+    const m2 = /\/(?:i\/)?article\/(\d+)/i.exec(matchingArticleUrlEntity.expanded_url);
+    if (m2) articleId = m2[1];
+  }
+  const rawTitle = (typeof articleObj?.title === "string" ? articleObj.title : "") || articleTitleStr || (typeof articleTitleObj?.title === "string" ? articleTitleObj.title : "") || (typeof matchingArticleUrlEntity?.title === "string" ? matchingArticleUrlEntity.title : "") || (tweet.text ?? "").replace(/https?:\/\/t\.co\/\S+/g, "").trim();
+  const previewText = typeof articleObj?.preview_text === "string" && articleObj.preview_text.trim() || typeof articleTitleObj?.preview_text === "string" && articleTitleObj.preview_text.trim() || null;
+  const handleSegment = username || "i";
+  const postUrl = `https://x.com/${handleSegment}/status/${tweet.id}`;
+  const articleUrl = articleId ? `https://x.com/${handleSegment}/article/${articleId}` : null;
+  return {
+    post_id: tweet.id,
+    article_id: articleId,
+    title: rawTitle.trim() || `(Untitled Article ${articleId ?? tweet.id})`,
+    preview_text: previewText,
+    created_at: tweet.created_at ?? null,
+    lang: tweet.lang ?? null,
+    post_url: postUrl,
+    article_url: articleUrl
+  };
+}
+async function listPublishedXArticles(options) {
+  if (!options.session.user?.id) {
+    const me2 = await authorizedJsonRequest({
+      method: "GET",
+      pathWithQuery: "/2/users/me",
+      session: options.session
+    });
+    if (me2.status >= 400 || !me2.data?.data?.id) {
+      throw new Error(
+        `Failed to resolve authenticated X user before listing articles (HTTP ${me2.status}): ${JSON.stringify(me2.data)}`
+      );
+    }
+    options.session.user = me2.data.data;
+  }
+  const userId = options.session.user.id;
+  const username = options.session.user.username ?? null;
+  const boundedMaxPages = Math.min(Math.max(Math.trunc(options.maxPages ?? 3) || 3, 1), 10);
+  if (!options.forceRefresh) {
+    const cached2 = publishedArticlesCache.get(userId);
+    if (cached2 && cached2.expiresAtMs > Date.now() && (!cached2.hasMore || cached2.pagesFetched >= boundedMaxPages)) {
+      return {
+        username: cached2.username ?? username,
+        user_id: userId,
+        scanned_posts: cached2.scannedPosts,
+        pages_fetched: cached2.pagesFetched,
+        cached: true,
+        articles: cached2.articles.slice()
+      };
+    }
+  }
+  const articles = [];
+  let scannedPosts = 0;
+  let pagesFetched = 0;
+  let nextToken;
+  let hasMore = false;
+  for (let page = 0; page < boundedMaxPages; page += 1) {
+    const params = new URLSearchParams({
+      exclude: "retweets,replies",
+      max_results: "100",
+      "tweet.fields": "article,article_title,created_at,entities,lang"
+    });
+    if (nextToken) {
+      params.set("pagination_token", nextToken);
+    }
+    const resp = await authorizedJsonRequest({
+      method: "GET",
+      pathWithQuery: `/2/users/${encodeURIComponent(userId)}/tweets?${params.toString()}`,
+      session: options.session
+    });
+    if (resp.status >= 400) {
+      throw new Error(
+        `Failed to fetch published X Articles (HTTP ${resp.status}): ${JSON.stringify(resp.data)}`
+      );
+    }
+    pagesFetched += 1;
+    const rows = Array.isArray(resp.data?.data) ? resp.data.data : [];
+    scannedPosts += rows.length;
+    for (const row of rows) {
+      const parsed = parseArticleFromTimelineTweet(row, username);
+      if (parsed) {
+        articles.push(parsed);
+      }
+    }
+    const token = resp.data?.meta?.next_token;
+    if (!token || rows.length === 0) {
+      hasMore = false;
+      nextToken = void 0;
+      break;
+    }
+    nextToken = token;
+    hasMore = page === boundedMaxPages - 1;
+  }
+  publishedArticlesCache.set(userId, {
+    expiresAtMs: Date.now() + PUBLISHED_ARTICLES_CACHE_TTL_MS,
+    username,
+    scannedPosts,
+    pagesFetched,
+    hasMore,
+    articles
+  });
+  return {
+    username,
+    user_id: userId,
+    scanned_posts: scannedPosts,
+    pages_fetched: pagesFetched,
+    cached: false,
+    articles: articles.slice()
+  };
+}
 
 // src/server.ts
 var PACKAGE_NAME = "@wezzard/mcp-x-articles";
@@ -20034,10 +20528,10 @@ var MAX_INLINE_PREVIEW_BYTES = 5 * 1024 * 1024;
 var PREVIEWABLE_MIMES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 var SERVER_INSTRUCTIONS = [
   "Publish local Markdown files as X Articles through a deterministic two-checkpoint workflow:",
-  "1. Always call `x_article_preflight` first on the target Markdown file before calling `x_article_create_draft`.",
+  "1. Always call `x_article_preflight` first on the target Markdown file before calling `x_article_create_draft` (you can also call `x_article_list_published` to search existing X Articles on this account).",
   "2. Visually inspect every image listed in `images_for_visual_review` (and attached MCP image blocks) for live credentials, financial balances, account IDs, email addresses, real names, or private file paths.",
-  "3. Checkpoint 1: Whenever `x_article_preflight` reports text `findings`, visual sensitivities, or conversion `warnings`, ask the user via your dedicated ask-user-question tool (when available) or directly in conversation, and wait for their explicit ruling before calling `x_article_create_draft`.",
-  "4. Call `x_article_create_draft` with the `preflight_token` returned by `x_article_preflight`, and share the returned `editor_url` (`https://x.com/compose/articles/edit/<id>`) with the user.",
+  "3. Checkpoint 1: Whenever `x_article_preflight` reports text `findings`, visual sensitivities, conversion `warnings`, `link_rewrite_suggestions`, or `unresolved_local_links`, ask the user via your dedicated ask-user-question tool (when available) or directly in conversation, and wait for their explicit ruling before calling `x_article_create_draft`.",
+  "4. Call `x_article_create_draft` with the `preflight_token` returned by `x_article_preflight` and any approved `link_rewrites` (applied non-destructively in memory without altering the Markdown file on disk), and share the returned `editor_url` (`https://x.com/compose/articles/edit/<id>`) with the user.",
   "5. Checkpoint 2: Never call `x_article_publish` in the same turn as `x_article_create_draft`. The X Articles API has no update endpoint and no delete endpoint; ask the user via your dedicated ask-user-question tool or in conversation, and call `x_article_publish` only after explicit approval."
 ].join("\n");
 var TOOLS = [
@@ -20068,9 +20562,43 @@ var TOOLS = [
     }
   },
   {
+    name: "x_article_list_published",
+    title: "List Published X Articles",
+    description: "List previously published X Articles on the authenticated X account timeline (`GET /2/users/{id}/tweets`), optionally filtering by title or preview query. Useful for finding canonical X URLs when cross-linking earlier posts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Optional case-insensitive title or preview filter string."
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of matching articles to return (default 20, max 100)."
+        },
+        max_pages: {
+          type: "number",
+          description: "Maximum timeline pages of 100 posts each to scan (default 3, max 10)."
+        },
+        refresh: {
+          type: "boolean",
+          description: "When true, bypasses the 5-minute in-memory timeline cache."
+        }
+      },
+      additionalProperties: false
+    },
+    annotations: {
+      title: "List Published X Articles",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    }
+  },
+  {
     name: "x_article_preflight",
     title: "Run X Article Preflight Scan and Preview",
-    description: "Required Step 1 before creating a draft. Deterministically scans the Markdown text for secrets and PII, dry-runs Markdown-to-content_state conversion to surface any lossy warnings, attaches local images for multimodal visual review, and issues a SHA-256 `preflight_token`. If findings, visual sensitivities, or warnings exist, ask the user via your ask-user-question tool or conversation before calling `x_article_create_draft`.",
+    description: "Required Step 1 before creating a draft. Deterministically scans the Markdown text for secrets and PII, dry-runs Markdown-to-content_state conversion to surface any lossy warnings, matches non-X cross-links against published X Articles (when authenticated), attaches local images for multimodal visual review, and issues a SHA-256 `preflight_token`. If findings, visual sensitivities, warnings, link rewrite suggestions, or unresolved local links exist, ask the user via your ask-user-question tool or conversation before calling `x_article_create_draft`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -20093,6 +20621,10 @@ var TOOLS = [
         include_image_previews: {
           type: "boolean",
           description: "When true (default), attaches local raster images (<= 5 MiB each) as MCP image content blocks for visual secret review."
+        },
+        resolve_x_links: {
+          type: "boolean",
+          description: "When true (default) and X OAuth 2.0 tokens are already cached, scans published X Articles on this account to suggest X-native URLs for external blog or relative Markdown links."
         }
       },
       required: ["markdown_path"],
@@ -20103,13 +20635,13 @@ var TOOLS = [
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: false
+      openWorldHint: true
     }
   },
   {
     name: "x_article_create_draft",
     title: "Create X Article Draft",
-    description: "Step 2: Verify the SHA-256 `preflight_token`, upload referenced inline images and optional cover image directly in 2.5 MB chunks without streaming base64 through LLM context, compile UTF-16 `content_state` in memory, and create a reversible X Article draft. After receiving `editor_url`, STOP and ask the user (via your ask-user-question tool or conversation) before calling `x_article_publish`.",
+    description: "Step 2: Verify the SHA-256 `preflight_token`, upload referenced inline images and optional cover image directly in 2.5 MB chunks without streaming base64 through LLM context, compile UTF-16 `content_state` in memory (applying optional non-destructive `link_rewrites`), and create a reversible X Article draft. After receiving `editor_url`, STOP and ask the user (via your ask-user-question tool or conversation) before calling `x_article_publish`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -20132,6 +20664,11 @@ var TOOLS = [
         omit_cover: {
           type: "boolean",
           description: "When true, omits the cover image even if `cover-image-x-article.png` exists."
+        },
+        link_rewrites: {
+          type: "object",
+          description: "Optional mapping from original Markdown link URLs to target X URLs (e.g., https://x.com/<user>/status/<id>). Applied non-destructively in memory without modifying the local Markdown file.",
+          additionalProperties: { type: "string" }
         }
       },
       required: ["markdown_path", "preflight_token"],
@@ -20233,9 +20770,9 @@ function createMcpServer() {
             type: "text",
             text: [
               `Publish \`${mdPath}\`${coverLine} as an X Article using \`@wezzard/mcp-x-articles\`:`,
-              "1. Call `x_article_preflight` first and visually inspect every returned image for credentials, balances, account IDs, emails, real names, or private paths.",
-              "2. If preflight reports any text findings, visual findings, or conversion warnings, ask me using your ask-user-question tool (or in chat) and wait for my ruling before creating a draft.",
-              "3. Call `x_article_create_draft` with the `preflight_token` and give me the returned `editor_url`.",
+              "1. Call `x_article_preflight` first (and optionally `x_article_list_published`) and visually inspect every returned image for credentials, balances, account IDs, emails, real names, or private paths.",
+              "2. If preflight reports any text findings, visual findings, conversion warnings, `link_rewrite_suggestions`, or `unresolved_local_links`, ask me using your ask-user-question tool (or in chat) and wait for my ruling before creating a draft.",
+              "3. Call `x_article_create_draft` with the `preflight_token` and any approved `link_rewrites` (without modifying the local Markdown file), and give me the returned `editor_url`.",
               "4. Stop and ask for my explicit confirmation (via your ask-user-question tool or chat) before calling `x_article_publish`."
             ].join("\n")
           }
@@ -20308,19 +20845,48 @@ function createMcpServer() {
           authenticated_user: session.user ?? null
         });
       }
+      if (name === "x_article_list_published") {
+        const query = typeof args.query === "string" ? args.query : void 0;
+        const limitRaw = typeof args.limit === "number" ? args.limit : 20;
+        const limit = Math.min(Math.max(Math.trunc(limitRaw) || 20, 1), 100);
+        const maxPagesRaw = typeof args.max_pages === "number" ? args.max_pages : 3;
+        const maxPages = Math.min(Math.max(Math.trunc(maxPagesRaw) || 3, 1), 10);
+        const forceRefresh = Boolean(args.refresh);
+        const session = await ensureAuthenticatedSession({
+          allowInteractiveLogin: false,
+          verifyProbe: true
+        });
+        const timeline = await listPublishedXArticles({
+          session,
+          maxPages,
+          forceRefresh
+        });
+        const filtered = filterPublishedXArticles(timeline.articles, query);
+        return jsonToolResult({
+          ok: true,
+          username: timeline.username,
+          user_id: timeline.user_id,
+          scanned_posts: timeline.scanned_posts,
+          pages_fetched: timeline.pages_fetched,
+          cached: timeline.cached,
+          total_found: timeline.articles.length,
+          articles: filtered.slice(0, limit)
+        });
+      }
       if (name === "x_article_preflight") {
         const markdownPathRaw = String(args.markdown_path ?? "").trim();
         if (!markdownPathRaw) {
           return jsonToolResult({ error: "`markdown_path` is required." }, true);
         }
-        const absMd = resolve4(markdownPathRaw);
-        if (!existsSync3(absMd)) {
+        const absMd = resolve5(markdownPathRaw);
+        if (!existsSync4(absMd)) {
           return jsonToolResult({ error: `Markdown file not found: ${absMd}` }, true);
         }
         const explicitTitle = typeof args.title === "string" ? args.title : void 0;
         const explicitCover = typeof args.cover_image_path === "string" ? args.cover_image_path : void 0;
         const omitCover = Boolean(args.omit_cover);
         const includePreviews = args.include_image_previews !== false;
+        const resolveXLinks = args.resolve_x_links !== false;
         const resolvedCover = resolveCoverImagePath(absMd, explicitCover, omitCover);
         const scanRes = scanSensitiveFile(absMd);
         const dryConversion = convertMarkdownFile(absMd, { explicitTitle });
@@ -20328,6 +20894,49 @@ function createMcpServer() {
           markdownPath: absMd,
           inlineImageSrcs: dryConversion.pending_images,
           coverImagePath: resolvedCover
+        });
+        const nonXLinks = dryConversion.links.filter(
+          (l3) => !l3.is_x_url && !/^(?:mailto:|tel:|#)/i.test(l3.href.trim())
+        );
+        let publishedArticles = [];
+        let xLinkResolution;
+        if (!resolveXLinks) {
+          xLinkResolution = { status: "skipped-disabled" };
+        } else if (nonXLinks.length === 0) {
+          xLinkResolution = { status: "skipped-no-links" };
+        } else {
+          const { credentials } = loadOAuth2ClientCredentials();
+          const hasCachedToken = Boolean(
+            credentials && loadOAuth2UserTokens(credentials.clientId).tokens
+          );
+          if (!hasCachedToken) {
+            xLinkResolution = { status: "skipped-unauthenticated" };
+          } else {
+            try {
+              const session = await ensureAuthenticatedSession({
+                allowInteractiveLogin: false,
+                verifyProbe: true
+              });
+              const timeline = await listPublishedXArticles({ session });
+              publishedArticles = timeline.articles;
+              xLinkResolution = {
+                status: "checked",
+                scanned_posts: timeline.scanned_posts,
+                published_articles_found: timeline.articles.length
+              };
+            } catch (err) {
+              xLinkResolution = {
+                status: "error",
+                error: err instanceof Error ? err.message : String(err)
+              };
+            }
+          }
+        }
+        const linkMatch = matchLinksToPublishedArticles({
+          markdownPath: absMd,
+          links: dryConversion.links,
+          publishedArticles,
+          sourceTitle: dryConversion.title
         });
         const reviewImagePaths = [
           ...scanRes.resolved_images.map((img) => ({
@@ -20345,7 +20954,7 @@ function createMcpServer() {
             }
           ] : []
         ];
-        const requiresUserRuling = scanRes.findings.length > 0 || dryConversion.warnings.length > 0 || reviewImagePaths.length > 0;
+        const requiresUserRuling = scanRes.findings.length > 0 || dryConversion.warnings.length > 0 || reviewImagePaths.length > 0 || linkMatch.suggestions.length > 0 || linkMatch.unresolved_local_links.length > 0;
         const summary = {
           ok: true,
           markdown_path: absMd,
@@ -20354,20 +20963,24 @@ function createMcpServer() {
           block_count: dryConversion.content_state.blocks.length,
           findings: scanRes.findings,
           warnings: dryConversion.warnings,
+          links: dryConversion.links,
+          link_rewrite_suggestions: linkMatch.suggestions,
+          unresolved_local_links: linkMatch.unresolved_local_links,
+          x_link_resolution: xLinkResolution,
           images_for_visual_review: reviewImagePaths,
           preflight_token: preflightToken,
           requires_user_ruling: requiresUserRuling,
-          checkpoint_instruction: requiresUserRuling ? "Inspect all findings, warnings, and review images. Present any sensitive items or conversion degradations to the user via your dedicated ask-user-question tool (or directly in chat) and wait for their ruling before calling `x_article_create_draft`." : "No text findings, warnings, or images detected. You may proceed to `x_article_create_draft` using `preflight_token`."
+          checkpoint_instruction: requiresUserRuling ? "Inspect all findings, warnings, link_rewrite_suggestions, unresolved_local_links, and review images. Ask the user via your dedicated ask-user-question tool (or directly in chat) for rulings \u2014 including which X URL rewrites to pass via `link_rewrites` to `x_article_create_draft` without modifying local disk files \u2014 before calling `x_article_create_draft`." : "No text findings, warnings, link suggestions, or images detected. You may proceed to `x_article_create_draft` using `preflight_token`."
         };
         const contentBlocks = [{ type: "text", text: JSON.stringify(summary, null, 2) }];
         if (includePreviews) {
           for (const img of reviewImagePaths) {
-            if (img.is_remote || !existsSync3(img.resolved_path)) continue;
-            const st2 = statSync2(img.resolved_path);
+            if (img.is_remote || !existsSync4(img.resolved_path)) continue;
+            const st2 = statSync3(img.resolved_path);
             if (!st2.isFile() || st2.size > MAX_INLINE_PREVIEW_BYTES) continue;
             const mime = guessMediaType(img.resolved_path);
             if (!PREVIEWABLE_MIMES.has(mime)) continue;
-            const b64 = readFileSync6(img.resolved_path).toString("base64");
+            const b64 = readFileSync7(img.resolved_path).toString("base64");
             contentBlocks.push({
               type: "text",
               text: `[Visual Review (${img.role})]: ${img.src}`
@@ -20393,9 +21006,35 @@ function createMcpServer() {
             true
           );
         }
-        const absMd = resolve4(markdownPathRaw);
-        if (!existsSync3(absMd)) {
+        const absMd = resolve5(markdownPathRaw);
+        if (!existsSync4(absMd)) {
           return jsonToolResult({ error: `Markdown file not found: ${absMd}` }, true);
+        }
+        let linkRewrites;
+        if (args.link_rewrites !== void 0) {
+          if (typeof args.link_rewrites !== "object" || args.link_rewrites === null || Array.isArray(args.link_rewrites)) {
+            return jsonToolResult(
+              {
+                error: "`link_rewrites` must be a JSON object mapping original link URLs to target http(s) URLs."
+              },
+              true
+            );
+          }
+          const validated = {};
+          for (const [k, v2] of Object.entries(args.link_rewrites)) {
+            if (typeof v2 !== "string" || !/^https?:\/\/\S+$/i.test(v2.trim())) {
+              return jsonToolResult(
+                {
+                  error: `Invalid link_rewrites target for "${k}": expected an http:// or https:// URL.`
+                },
+                true
+              );
+            }
+            validated[k] = v2.trim();
+          }
+          if (Object.keys(validated).length > 0) {
+            linkRewrites = validated;
+          }
         }
         const explicitTitle = typeof args.title === "string" ? args.title : void 0;
         const explicitCover = typeof args.cover_image_path === "string" ? args.cover_image_path : void 0;
@@ -20419,11 +21058,11 @@ function createMcpServer() {
           allowInteractiveLogin: true,
           verifyProbe: true
         });
-        const mdDir = dirname3(absMd);
+        const mdDir = dirname4(absMd);
         const mediaMap = {};
         const uploadedInline = [];
         for (const src of dryRun.pending_images) {
-          const target = isRemoteUrl(src) ? src : resolve4(mdDir, src);
+          const target = isRemoteUrl(src) ? src : resolve5(mdDir, src);
           const loaded = await loadImageBytes(target);
           const up = await uploadMediaBuffer({
             bytes: loaded.bytes,
@@ -20456,8 +21095,25 @@ function createMcpServer() {
         }
         const finalConversion = convertMarkdownFile(absMd, {
           explicitTitle,
-          mediaMap
+          mediaMap,
+          linkRewrites
         });
+        const appliedLinkRewrites = [];
+        if (linkRewrites) {
+          const counts = /* @__PURE__ */ new Map();
+          for (const link of finalConversion.links) {
+            if (linkRewrites[link.href]) {
+              counts.set(link.href, (counts.get(link.href) ?? 0) + 1);
+            }
+          }
+          for (const [fromHref, occurrences] of counts.entries()) {
+            appliedLinkRewrites.push({
+              from: fromHref,
+              to: linkRewrites[fromHref],
+              occurrences
+            });
+          }
+        }
         const draft = await createXArticleDraft({
           title: finalConversion.title,
           contentState: finalConversion.content_state,
@@ -20472,6 +21128,7 @@ function createMcpServer() {
           title: finalConversion.title,
           uploaded_inline_images: uploadedInline,
           cover_media_id: coverMediaId ?? null,
+          applied_link_rewrites: appliedLinkRewrites,
           warnings: finalConversion.warnings,
           next_step: "CHECKPOINT: Present `editor_url` to the user and STOP. Ask the user via your dedicated ask-user-question tool (or in conversation) for explicit approval before calling `x_article_publish`, because publishing is irreversible."
         });
@@ -20525,6 +21182,7 @@ function printHelp() {
       "  mcp-x-articles            Start the MCP server over stdio (default)",
       "  mcp-x-articles auth       Configure X OAuth 2.0 keys in macOS Keychain and authorize in browser",
       "  mcp-x-articles status     Show current OAuth 2.0 credential and token status",
+      "  mcp-x-articles articles   List published X Articles from your timeline (for cross-link lookup)",
       "  mcp-x-articles --version  Print package version",
       "  mcp-x-articles --help     Print this help message",
       ""
@@ -20634,6 +21292,63 @@ async function runStatusCli() {
     ) + "\n"
   );
 }
+async function runArticlesCli(argv) {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(
+      "Usage: mcp-x-articles articles [--query <text>] [--limit <n>] [--max-pages <n>] [--refresh]\n"
+    );
+    return;
+  }
+  let query;
+  let limit = 20;
+  let maxPages = 3;
+  const forceRefresh = argv.includes("--refresh");
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--query" && i + 1 < argv.length) {
+      query = argv[i + 1];
+      i += 1;
+    } else if (arg === "--limit" && i + 1 < argv.length) {
+      const parsed = Number(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        limit = Math.min(100, Math.trunc(parsed));
+      }
+      i += 1;
+    } else if (arg === "--max-pages" && i + 1 < argv.length) {
+      const parsed = Number(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        maxPages = Math.min(10, Math.trunc(parsed));
+      }
+      i += 1;
+    }
+  }
+  const session = await ensureAuthenticatedSession({
+    allowInteractiveLogin: false,
+    verifyProbe: true
+  });
+  const res = await listPublishedXArticles({
+    session,
+    maxPages,
+    forceRefresh
+  });
+  const filtered = filterPublishedXArticles(res.articles, query);
+  process.stdout.write(
+    JSON.stringify(
+      {
+        ok: true,
+        username: res.username,
+        user_id: res.user_id,
+        scanned_posts: res.scanned_posts,
+        pages_fetched: res.pages_fetched,
+        cached: res.cached,
+        total_found: res.articles.length,
+        articles: filtered.slice(0, limit)
+      },
+      null,
+      2
+    ) + "\n"
+  );
+}
 async function main() {
   const argv = process.argv.slice(2);
   const first = argv[0] ?? "";
@@ -20652,6 +21367,10 @@ async function main() {
   }
   if (first === "status") {
     await runStatusCli();
+    return;
+  }
+  if (first === "articles") {
+    await runArticlesCli(argv.slice(1));
     return;
   }
   await runStdioMcpServer();
@@ -20683,15 +21402,19 @@ export {
   buildOAuth2AuthorizeUrl,
   clearOAuth2ClientCredentials,
   clearOAuth2UserTokens,
+  clearPublishedXArticlesCache,
   clientKeyId,
   computePreflightToken,
   configDirPath,
   convertMarkdownFile,
   createMcpServer,
   detectHostConfigUi,
+  detectTextScript,
   ensureAuthenticatedSession,
   exchangeAuthorizationCode,
+  extractLocalMarkdownTitle,
   extractMarkdownImageSrcs,
+  filterPublishedXArticles,
   generatePkcePair,
   getOAuth2AuthorizeUrl,
   getOAuth2Scopes,
@@ -20699,9 +21422,11 @@ export {
   guessMediaCategory,
   guessMediaType,
   keychainServiceName,
+  listPublishedXArticles,
   loadOAuth2ClientCredentials,
   loadOAuth2UserTokens,
   markdownToContentState,
+  matchLinksToPublishedArticles,
   refreshOAuth2Token,
   resolveCoverImagePath,
   runInteractiveSetupAndOAuth2Flow,

@@ -44,6 +44,9 @@ const {
   sha256Hex,
   withOAuth2RefreshLock,
   guessMediaCategory,
+  matchLinksToPublishedArticles,
+  filterPublishedXArticles,
+  extractLocalMarkdownTitle,
 } = await import(serverBundlePath);
 
 // Ensure outer IDE or OAuth env vars don't leak into standalone tests.
@@ -491,6 +494,38 @@ try {
       res.end(JSON.stringify({ data: { id: '42', username: 'mockwriter', name: 'Mock Writer' } }));
       return;
     }
+    if (req.method === 'GET' && req.url.startsWith('/2/users/42/tweets')) {
+      res.end(
+        JSON.stringify({
+          data: [
+            {
+              id: '900000000000000001',
+              text: 'https://t.co/enArticle',
+              created_at: '2026-11-16T10:00:00Z',
+              lang: 'en',
+              article: {
+                id: '300000000000000001',
+                title: '9 Tips to Make Antigravity CLI Less Painful',
+                preview_text: 'CLI guide in English',
+              },
+            },
+            {
+              id: '900000000000000002',
+              text: 'https://t.co/zhArticle',
+              created_at: '2026-11-16T11:00:00Z',
+              lang: 'zh',
+              article: {
+                id: '300000000000000002',
+                title: '9 招让你的 Antigravity CLI 不那么难用',
+                preview_text: 'CLI 指南中文版',
+              },
+            },
+          ],
+          meta: { result_count: 2 },
+        }),
+      );
+      return;
+    }
     if (req.method === 'POST' && req.url === '/2/media/upload/initialize') {
       if (forceOne401) {
         forceOne401 = false;
@@ -539,7 +574,14 @@ try {
   await new Promise((resolveListen) => mockApiServer.listen(0, '127.0.0.1', resolveListen));
   const mockPort = mockApiServer.address().port;
 
-  // Create a sample post directory with inline PNG, animated GIF, and auto-detected cover PNG.
+  // Create a companion post + sample post directory with inline PNG, animated GIF, cross-links, and cover PNG.
+  const otherPostDir = join(tempDir, 'other-post');
+  execFileSync('mkdir', ['-p', otherPostDir]);
+  writeFileSync(
+    join(otherPostDir, 'index.md'),
+    ['---', 'title: "9 Tips to Make Antigravity CLI Less Painful"', '---', '', 'CLI body.'].join('\n'),
+  );
+
   const postDir = join(tempDir, 'sample-post');
   execFileSync('mkdir', ['-p', postDir]);
   const onePixelPng = Buffer.from(
@@ -556,7 +598,7 @@ try {
     [
       '# End-to-End MCP Test Title',
       '',
-      'Body paragraph with **bold** text.',
+      'Body paragraph with **bold** text, a [9 Tips to Make Antigravity CLI Less Painful](https://example.com/post/2026/11/making-antigravity-cli-usable-7276/) link, and [local post](../other-post/index.md).',
       '',
       '![Screen reader description](./inline.png "Figure 1")',
       '',
@@ -588,7 +630,7 @@ try {
     assert.ok(instructions?.includes('x_article_preflight'));
 
     const { tools } = await mcpClient.listTools();
-    assert.equal(tools.length, 4);
+    assert.equal(tools.length, 5);
     for (const tool of tools) {
       assert.equal(tool.inputSchema.type, 'object');
       assert.equal(tool.inputSchema.anyOf, undefined);
@@ -612,6 +654,25 @@ try {
     assert.equal(authJson.refreshed, true);
     assert.equal(authJson.authenticated_user.username, 'mockwriter');
 
+    // 7a-bis. List published X Articles on timeline & filter by query.
+    const listAllRes = await mcpClient.callTool({
+      name: 'x_article_list_published',
+      arguments: {},
+    });
+    assert.ok(!listAllRes.isError, `x_article_list_published failed: ${listAllRes.content[0]?.text}`);
+    const listAllJson = JSON.parse(listAllRes.content[0].text);
+    assert.equal(listAllJson.total_found, 2);
+    assert.equal(listAllJson.articles.length, 2);
+
+    const listFilteredRes = await mcpClient.callTool({
+      name: 'x_article_list_published',
+      arguments: { query: 'Painful' },
+    });
+    assert.ok(!listFilteredRes.isError);
+    const listFilteredJson = JSON.parse(listFilteredRes.content[0].text);
+    assert.equal(listFilteredJson.articles.length, 1);
+    assert.equal(listFilteredJson.articles[0].post_id, '900000000000000001');
+
     // 7b. Gate 1 rejects create_draft without a valid preflight_token.
     const rejected = await mcpClient.callTool({
       name: 'x_article_create_draft',
@@ -622,7 +683,7 @@ try {
     });
     assert.equal(rejected.isError, true);
 
-    // 7c. Run preflight -> verify token, auto-detected cover, and MCP image blocks.
+    // 7c. Run preflight -> verify token, auto-detected cover, MCP image blocks, and X link suggestions.
     const preflightRes = await mcpClient.callTool({
       name: 'x_article_preflight',
       arguments: { markdown_path: postMdPath },
@@ -632,6 +693,17 @@ try {
     assert.equal(preflightJson.resolved_title, 'End-to-End MCP Test Title');
     assert.ok(preflightJson.cover_image_path.endsWith('cover-image-x-article.png'));
     assert.ok(preflightJson.preflight_token.startsWith('sha256:v1:'));
+    assert.equal(preflightJson.x_link_resolution?.status, 'checked');
+    const blogSugg = preflightJson.link_rewrite_suggestions?.find(
+      (s) => s.original_href === 'https://example.com/post/2026/11/making-antigravity-cli-usable-7276/',
+    );
+    const relSugg = preflightJson.link_rewrite_suggestions?.find(
+      (s) => s.original_href === '../other-post/index.md',
+    );
+    assert.ok(blogSugg, 'preflight should suggest X URL for matching blog cross-link');
+    assert.equal(blogSugg.suggested_url, 'https://x.com/mockwriter/status/900000000000000001');
+    assert.ok(relSugg, 'preflight should suggest X URL for matching relative .md link via frontmatter');
+    assert.equal(relSugg.suggested_url, 'https://x.com/mockwriter/status/900000000000000001');
     const imageBlocks = preflightRes.content.filter((c) => c.type === 'image');
     assert.equal(imageBlocks.length, 3, 'inline.png, anim.gif, and cover-image-x-article.png should attach');
 
@@ -646,7 +718,7 @@ try {
     });
     assert.equal(staleRes.isError, true);
 
-    // 7e. Re-scan and create draft -> verify reactive 401 refresh + GIF category + rotated token reuse!
+    // 7e. Re-scan and create draft with non-destructive link_rewrites -> verify reactive 401 refresh + rewritten URL!
     const preflightRes2 = await mcpClient.callTool({
       name: 'x_article_preflight',
       arguments: { markdown_path: postMdPath },
@@ -658,6 +730,10 @@ try {
       arguments: {
         markdown_path: postMdPath,
         preflight_token: freshToken,
+        link_rewrites: {
+          'https://example.com/post/2026/11/making-antigravity-cli-usable-7276/':
+            'https://x.com/mockwriter/status/900000000000000001',
+        },
       },
     });
     assert.ok(!draftRes.isError, `create_draft failed: ${draftRes.content[0]?.text}`);
@@ -665,6 +741,13 @@ try {
     assert.equal(draftJson.article_id, '777777777777777777');
     assert.equal(draftJson.editor_url, 'https://x.com/compose/articles/edit/777777777777777777');
     assert.equal(draftJson.cover_media_id, '5000000003');
+    assert.deepEqual(draftJson.applied_link_rewrites, [
+      {
+        from: 'https://example.com/post/2026/11/making-antigravity-cli-usable-7276/',
+        to: 'https://x.com/mockwriter/status/900000000000000001',
+        occurrences: 1,
+      },
+    ]);
     assert.equal(refreshCalls, 2, 'Should have refreshed once for initial seed and once on reactive 401 retry');
 
     const initCalls = recordedRequests.filter((r) => r.url === '/2/media/upload/initialize');
@@ -682,6 +765,16 @@ try {
       media_category: 'tweet_image',
       media_id: '5000000003',
     });
+    assert.ok(
+      draftApiCall.body.content_state.entities.some(
+        (e) => e.value.type === 'link' && e.value.data.url === 'https://x.com/mockwriter/status/900000000000000001',
+      ),
+      'Sent content_state must contain the rewritten X URL',
+    );
+    assert.ok(
+      readFileSync(postMdPath, 'utf8').includes('https://example.com/post/2026/11/making-antigravity-cli-usable-7276/'),
+      'Disk Markdown file must remain untouched by non-destructive link_rewrites',
+    );
     const uploadedImgEntity = draftApiCall.body.content_state.entities.find((e) => e.value.type === 'image');
     assert.equal(uploadedImgEntity.value.data.media_items[0].media_id, '5000000001');
     assert.equal(uploadedImgEntity.value.data.caption, 'Figure 1');
@@ -888,6 +981,118 @@ try {
       else process.env[k] = v;
     }
   }
+
+  // --- 10. Link resolver, language isolation & non-destructive rewriting -----
+
+  const resolverDir = join(tempDir, 'resolver-post', 'zh-Hans');
+  execFileSync('mkdir', ['-p', resolverDir]);
+  const zhLinkedDir = join(tempDir, 'zh-linked-post');
+  execFileSync('mkdir', ['-p', zhLinkedDir]);
+  writeFileSync(
+    join(zhLinkedDir, 'index.md'),
+    ['---', 'title: "9 招让你的 Antigravity CLI 不那么难用"', '---', '', '内容。'].join('\n'),
+  );
+  const currentZhMd = join(resolverDir, 'index.md');
+  writeFileSync(currentZhMd, '# 示例文章\n\n正文。');
+
+  const sampleArticles = [
+    {
+      post_id: '111',
+      article_id: '2111',
+      title: '9 Tips to Make Antigravity CLI Less Painful',
+      preview_text: 'Tips for agy CLI',
+      created_at: '2026-11-16T10:00:00Z',
+      lang: 'en',
+      post_url: 'https://x.com/author/status/111',
+      article_url: 'https://x.com/author/article/2111',
+    },
+    {
+      post_id: '222',
+      article_id: '2222',
+      title: '9 招让你的 Antigravity CLI 不那么难用',
+      preview_text: 'agy 命令行技巧',
+      created_at: '2026-11-16T11:00:00Z',
+      lang: 'zh',
+      post_url: 'https://x.com/author/status/222',
+      article_url: 'https://x.com/author/article/2222',
+    },
+  ];
+
+  // Exact match respects EN vs ZH script isolation and reads relative .md frontmatter.
+  assert.equal(extractLocalMarkdownTitle(currentZhMd, '../../zh-linked-post/index.md'), '9 招让你的 Antigravity CLI 不那么难用');
+
+  const resolvedMix = matchLinksToPublishedArticles({
+    markdownPath: currentZhMd,
+    sourceTitle: '示例文章',
+    publishedArticles: sampleArticles,
+    links: [
+      {
+        href: 'https://example.com/post/2026/11/making-antigravity-cli-usable-7276/',
+        text: '9 Tips to Make Antigravity CLI Less Painful',
+        is_relative: false,
+        is_x_url: false,
+      },
+      {
+        href: 'https://example.com/zh-Hans/post/2026/11/making-antigravity-cli-usable-7276/',
+        text: '之前的命令行指南',
+        is_relative: false,
+        is_x_url: false,
+      },
+      {
+        href: '../../zh-linked-post/index.md',
+        text: '这篇文章',
+        is_relative: true,
+        is_x_url: false,
+      },
+      {
+        href: '../missing-post/index.md',
+        text: '尚未同步的本地文章',
+        is_relative: true,
+        is_x_url: false,
+      },
+    ],
+  });
+
+  const enMatch = resolvedMix.suggestions.find(
+    (s) => s.original_href === 'https://example.com/post/2026/11/making-antigravity-cli-usable-7276/',
+  );
+  assert.equal(enMatch?.matched_post_id, '111');
+  assert.equal(enMatch?.match_reason, 'exact-title');
+
+  // Strict language isolation: /zh-Hans/ URL must NOT mismatch EN article 111 even though anchor lacks exact ZH title!
+  const zhBlogShouldNotHitEn = resolvedMix.suggestions.find(
+    (s) => s.original_href === 'https://example.com/zh-Hans/post/2026/11/making-antigravity-cli-usable-7276/',
+  );
+  assert.equal(zhBlogShouldNotHitEn, undefined);
+
+  const zhRelMatch = resolvedMix.suggestions.find(
+    (s) => s.original_href === '../../zh-linked-post/index.md',
+  );
+  assert.equal(zhRelMatch?.matched_post_id, '222');
+  assert.equal(zhRelMatch?.match_reason, 'exact-title');
+
+  assert.equal(resolvedMix.unresolved_local_links.length, 1);
+  assert.equal(resolvedMix.unresolved_local_links[0].original_href, '../missing-post/index.md');
+
+  // Verify converter emits relative-link warning unless linkRewrites supplies target URL.
+  const convNoRewrite = markdownToContentState('# T\n\nSee [A](../other.md) and [B](https://blog.example/a).');
+  assert.ok(convNoRewrite.warnings.some((w) => w.startsWith('relative-link: "../other.md"')));
+  assert.equal(convNoRewrite.links.length, 2);
+
+  const convWithRewrite = markdownToContentState('# T\n\nSee [A](../other.md) and [B](https://blog.example/a).', {
+    linkRewrites: {
+      '../other.md': 'https://x.com/author/status/222',
+      'https://blog.example/a': 'https://x.com/author/status/111',
+    },
+  });
+  assert.ok(!convWithRewrite.warnings.some((w) => w.startsWith('relative-link:')));
+  const linkUrls = convWithRewrite.content_state.entities
+    .filter((e) => e.value.type === 'link')
+    .map((e) => e.value.data.url);
+  assert.deepEqual(linkUrls, ['https://x.com/author/status/222', 'https://x.com/author/status/111']);
+  assert.equal(filterPublishedXArticles(sampleArticles, 'Less Painful').length, 1);
+
+  console.log('link resolver, language isolation & non-destructive rewriting tests: OK');
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

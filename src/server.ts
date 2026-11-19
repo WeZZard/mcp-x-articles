@@ -14,6 +14,7 @@ import {
   loadOAuth2ClientCredentials,
   loadOAuth2UserTokens,
 } from './keychain.js';
+import { filterPublishedXArticles, matchLinksToPublishedArticles } from './link-resolver.js';
 import {
   computePreflightToken,
   resolveCoverImagePath,
@@ -25,9 +26,11 @@ import {
   ensureAuthenticatedSession,
   guessMediaCategory,
   guessMediaType,
+  listPublishedXArticles,
   loadImageBytes,
   publishXArticle,
   uploadMediaBuffer,
+  type PublishedXArticle,
 } from './x-api.js';
 
 declare const __PACKAGE_VERSION__: string;
@@ -40,10 +43,10 @@ const PREVIEWABLE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'imag
 
 export const SERVER_INSTRUCTIONS = [
   'Publish local Markdown files as X Articles through a deterministic two-checkpoint workflow:',
-  '1. Always call `x_article_preflight` first on the target Markdown file before calling `x_article_create_draft`.',
+  '1. Always call `x_article_preflight` first on the target Markdown file before calling `x_article_create_draft` (you can also call `x_article_list_published` to search existing X Articles on this account).',
   '2. Visually inspect every image listed in `images_for_visual_review` (and attached MCP image blocks) for live credentials, financial balances, account IDs, email addresses, real names, or private file paths.',
-  '3. Checkpoint 1: Whenever `x_article_preflight` reports text `findings`, visual sensitivities, or conversion `warnings`, ask the user via your dedicated ask-user-question tool (when available) or directly in conversation, and wait for their explicit ruling before calling `x_article_create_draft`.',
-  '4. Call `x_article_create_draft` with the `preflight_token` returned by `x_article_preflight`, and share the returned `editor_url` (`https://x.com/compose/articles/edit/<id>`) with the user.',
+  '3. Checkpoint 1: Whenever `x_article_preflight` reports text `findings`, visual sensitivities, conversion `warnings`, `link_rewrite_suggestions`, or `unresolved_local_links`, ask the user via your dedicated ask-user-question tool (when available) or directly in conversation, and wait for their explicit ruling before calling `x_article_create_draft`.',
+  '4. Call `x_article_create_draft` with the `preflight_token` returned by `x_article_preflight` and any approved `link_rewrites` (applied non-destructively in memory without altering the Markdown file on disk), and share the returned `editor_url` (`https://x.com/compose/articles/edit/<id>`) with the user.',
   '5. Checkpoint 2: Never call `x_article_publish` in the same turn as `x_article_create_draft`. The X Articles API has no update endpoint and no delete endpoint; ask the user via your dedicated ask-user-question tool or in conversation, and call `x_article_publish` only after explicit approval.',
 ].join('\n');
 
@@ -78,10 +81,45 @@ const TOOLS = [
     },
   },
   {
+    name: 'x_article_list_published',
+    title: 'List Published X Articles',
+    description:
+      'List previously published X Articles on the authenticated X account timeline (`GET /2/users/{id}/tweets`), optionally filtering by title or preview query. Useful for finding canonical X URLs when cross-linking earlier posts.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Optional case-insensitive title or preview filter string.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of matching articles to return (default 20, max 100).',
+        },
+        max_pages: {
+          type: 'number',
+          description: 'Maximum timeline pages of 100 posts each to scan (default 3, max 10).',
+        },
+        refresh: {
+          type: 'boolean',
+          description: 'When true, bypasses the 5-minute in-memory timeline cache.',
+        },
+      },
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'List Published X Articles',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  {
     name: 'x_article_preflight',
     title: 'Run X Article Preflight Scan and Preview',
     description:
-      'Required Step 1 before creating a draft. Deterministically scans the Markdown text for secrets and PII, dry-runs Markdown-to-content_state conversion to surface any lossy warnings, attaches local images for multimodal visual review, and issues a SHA-256 `preflight_token`. If findings, visual sensitivities, or warnings exist, ask the user via your ask-user-question tool or conversation before calling `x_article_create_draft`.',
+      'Required Step 1 before creating a draft. Deterministically scans the Markdown text for secrets and PII, dry-runs Markdown-to-content_state conversion to surface any lossy warnings, matches non-X cross-links against published X Articles (when authenticated), attaches local images for multimodal visual review, and issues a SHA-256 `preflight_token`. If findings, visual sensitivities, warnings, link rewrite suggestions, or unresolved local links exist, ask the user via your ask-user-question tool or conversation before calling `x_article_create_draft`.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -109,6 +147,11 @@ const TOOLS = [
           description:
             'When true (default), attaches local raster images (<= 5 MiB each) as MCP image content blocks for visual secret review.',
         },
+        resolve_x_links: {
+          type: 'boolean',
+          description:
+            'When true (default) and X OAuth 2.0 tokens are already cached, scans published X Articles on this account to suggest X-native URLs for external blog or relative Markdown links.',
+        },
       },
       required: ['markdown_path'],
       additionalProperties: false,
@@ -118,14 +161,14 @@ const TOOLS = [
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: false,
+      openWorldHint: true,
     },
   },
   {
     name: 'x_article_create_draft',
     title: 'Create X Article Draft',
     description:
-      'Step 2: Verify the SHA-256 `preflight_token`, upload referenced inline images and optional cover image directly in 2.5 MB chunks without streaming base64 through LLM context, compile UTF-16 `content_state` in memory, and create a reversible X Article draft. After receiving `editor_url`, STOP and ask the user (via your ask-user-question tool or conversation) before calling `x_article_publish`.',
+      'Step 2: Verify the SHA-256 `preflight_token`, upload referenced inline images and optional cover image directly in 2.5 MB chunks without streaming base64 through LLM context, compile UTF-16 `content_state` in memory (applying optional non-destructive `link_rewrites`), and create a reversible X Article draft. After receiving `editor_url`, STOP and ask the user (via your ask-user-question tool or conversation) before calling `x_article_publish`.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -149,6 +192,12 @@ const TOOLS = [
         omit_cover: {
           type: 'boolean',
           description: 'When true, omits the cover image even if `cover-image-x-article.png` exists.',
+        },
+        link_rewrites: {
+          type: 'object',
+          description:
+            'Optional mapping from original Markdown link URLs to target X URLs (e.g., https://x.com/<user>/status/<id>). Applied non-destructively in memory without modifying the local Markdown file.',
+          additionalProperties: { type: 'string' },
         },
       },
       required: ['markdown_path', 'preflight_token'],
@@ -258,9 +307,9 @@ export function createMcpServer(): Server {
             type: 'text' as const,
             text: [
               `Publish \`${mdPath}\`${coverLine} as an X Article using \`@wezzard/mcp-x-articles\`:`,
-              '1. Call `x_article_preflight` first and visually inspect every returned image for credentials, balances, account IDs, emails, real names, or private paths.',
-              '2. If preflight reports any text findings, visual findings, or conversion warnings, ask me using your ask-user-question tool (or in chat) and wait for my ruling before creating a draft.',
-              '3. Call `x_article_create_draft` with the `preflight_token` and give me the returned `editor_url`.',
+              '1. Call `x_article_preflight` first (and optionally `x_article_list_published`) and visually inspect every returned image for credentials, balances, account IDs, emails, real names, or private paths.',
+              '2. If preflight reports any text findings, visual findings, conversion warnings, `link_rewrite_suggestions`, or `unresolved_local_links`, ask me using your ask-user-question tool (or in chat) and wait for my ruling before creating a draft.',
+              '3. Call `x_article_create_draft` with the `preflight_token` and any approved `link_rewrites` (without modifying the local Markdown file), and give me the returned `editor_url`.',
               '4. Stop and ask for my explicit confirmation (via your ask-user-question tool or chat) before calling `x_article_publish`.',
             ].join('\n'),
           },
@@ -345,6 +394,37 @@ export function createMcpServer(): Server {
         });
       }
 
+      if (name === 'x_article_list_published') {
+        const query = typeof args.query === 'string' ? args.query : undefined;
+        const limitRaw = typeof args.limit === 'number' ? args.limit : 20;
+        const limit = Math.min(Math.max(Math.trunc(limitRaw) || 20, 1), 100);
+        const maxPagesRaw = typeof args.max_pages === 'number' ? args.max_pages : 3;
+        const maxPages = Math.min(Math.max(Math.trunc(maxPagesRaw) || 3, 1), 10);
+        const forceRefresh = Boolean(args.refresh);
+
+        const session = await ensureAuthenticatedSession({
+          allowInteractiveLogin: false,
+          verifyProbe: true,
+        });
+        const timeline = await listPublishedXArticles({
+          session,
+          maxPages,
+          forceRefresh,
+        });
+        const filtered = filterPublishedXArticles(timeline.articles, query);
+
+        return jsonToolResult({
+          ok: true,
+          username: timeline.username,
+          user_id: timeline.user_id,
+          scanned_posts: timeline.scanned_posts,
+          pages_fetched: timeline.pages_fetched,
+          cached: timeline.cached,
+          total_found: timeline.articles.length,
+          articles: filtered.slice(0, limit),
+        });
+      }
+
       if (name === 'x_article_preflight') {
         const markdownPathRaw = String(args.markdown_path ?? '').trim();
         if (!markdownPathRaw) {
@@ -360,6 +440,7 @@ export function createMcpServer(): Server {
           typeof args.cover_image_path === 'string' ? args.cover_image_path : undefined;
         const omitCover = Boolean(args.omit_cover);
         const includePreviews = args.include_image_previews !== false;
+        const resolveXLinks = args.resolve_x_links !== false;
 
         const resolvedCover = resolveCoverImagePath(absMd, explicitCover, omitCover);
         const scanRes = scanSensitiveFile(absMd);
@@ -369,6 +450,62 @@ export function createMcpServer(): Server {
           markdownPath: absMd,
           inlineImageSrcs: dryConversion.pending_images,
           coverImagePath: resolvedCover,
+        });
+
+        const nonXLinks = dryConversion.links.filter(
+          (l) => !l.is_x_url && !/^(?:mailto:|tel:|#)/i.test(l.href.trim()),
+        );
+        let publishedArticles: PublishedXArticle[] = [];
+        let xLinkResolution: {
+          status:
+            | 'checked'
+            | 'skipped-disabled'
+            | 'skipped-no-links'
+            | 'skipped-unauthenticated'
+            | 'error';
+          scanned_posts?: number;
+          published_articles_found?: number;
+          error?: string;
+        };
+
+        if (!resolveXLinks) {
+          xLinkResolution = { status: 'skipped-disabled' };
+        } else if (nonXLinks.length === 0) {
+          xLinkResolution = { status: 'skipped-no-links' };
+        } else {
+          const { credentials } = loadOAuth2ClientCredentials();
+          const hasCachedToken = Boolean(
+            credentials && loadOAuth2UserTokens(credentials.clientId).tokens,
+          );
+          if (!hasCachedToken) {
+            xLinkResolution = { status: 'skipped-unauthenticated' };
+          } else {
+            try {
+              const session = await ensureAuthenticatedSession({
+                allowInteractiveLogin: false,
+                verifyProbe: true,
+              });
+              const timeline = await listPublishedXArticles({ session });
+              publishedArticles = timeline.articles;
+              xLinkResolution = {
+                status: 'checked',
+                scanned_posts: timeline.scanned_posts,
+                published_articles_found: timeline.articles.length,
+              };
+            } catch (err) {
+              xLinkResolution = {
+                status: 'error',
+                error: err instanceof Error ? err.message : String(err),
+              };
+            }
+          }
+        }
+
+        const linkMatch = matchLinksToPublishedArticles({
+          markdownPath: absMd,
+          links: dryConversion.links,
+          publishedArticles,
+          sourceTitle: dryConversion.title,
         });
 
         const reviewImagePaths = [
@@ -393,7 +530,9 @@ export function createMcpServer(): Server {
         const requiresUserRuling =
           scanRes.findings.length > 0 ||
           dryConversion.warnings.length > 0 ||
-          reviewImagePaths.length > 0;
+          reviewImagePaths.length > 0 ||
+          linkMatch.suggestions.length > 0 ||
+          linkMatch.unresolved_local_links.length > 0;
 
         const summary = {
           ok: true,
@@ -403,12 +542,16 @@ export function createMcpServer(): Server {
           block_count: dryConversion.content_state.blocks.length,
           findings: scanRes.findings,
           warnings: dryConversion.warnings,
+          links: dryConversion.links,
+          link_rewrite_suggestions: linkMatch.suggestions,
+          unresolved_local_links: linkMatch.unresolved_local_links,
+          x_link_resolution: xLinkResolution,
           images_for_visual_review: reviewImagePaths,
           preflight_token: preflightToken,
           requires_user_ruling: requiresUserRuling,
           checkpoint_instruction: requiresUserRuling
-            ? 'Inspect all findings, warnings, and review images. Present any sensitive items or conversion degradations to the user via your dedicated ask-user-question tool (or directly in chat) and wait for their ruling before calling `x_article_create_draft`.'
-            : 'No text findings, warnings, or images detected. You may proceed to `x_article_create_draft` using `preflight_token`.',
+            ? 'Inspect all findings, warnings, link_rewrite_suggestions, unresolved_local_links, and review images. Ask the user via your dedicated ask-user-question tool (or directly in chat) for rulings — including which X URL rewrites to pass via `link_rewrites` to `x_article_create_draft` without modifying local disk files — before calling `x_article_create_draft`.'
+            : 'No text findings, warnings, link suggestions, or images detected. You may proceed to `x_article_create_draft` using `preflight_token`.',
         };
 
         const contentBlocks: Array<
@@ -455,6 +598,38 @@ export function createMcpServer(): Server {
         const absMd = resolve(markdownPathRaw);
         if (!existsSync(absMd)) {
           return jsonToolResult({ error: `Markdown file not found: ${absMd}` }, true);
+        }
+
+        let linkRewrites: Record<string, string> | undefined;
+        if (args.link_rewrites !== undefined) {
+          if (
+            typeof args.link_rewrites !== 'object' ||
+            args.link_rewrites === null ||
+            Array.isArray(args.link_rewrites)
+          ) {
+            return jsonToolResult(
+              {
+                error:
+                  '`link_rewrites` must be a JSON object mapping original link URLs to target http(s) URLs.',
+              },
+              true,
+            );
+          }
+          const validated: Record<string, string> = {};
+          for (const [k, v] of Object.entries(args.link_rewrites as Record<string, unknown>)) {
+            if (typeof v !== 'string' || !/^https?:\/\/\S+$/i.test(v.trim())) {
+              return jsonToolResult(
+                {
+                  error: `Invalid link_rewrites target for "${k}": expected an http:// or https:// URL.`,
+                },
+                true,
+              );
+            }
+            validated[k] = v.trim();
+          }
+          if (Object.keys(validated).length > 0) {
+            linkRewrites = validated;
+          }
         }
 
         const explicitTitle = typeof args.title === 'string' ? args.title : undefined;
@@ -526,7 +701,25 @@ export function createMcpServer(): Server {
         const finalConversion = convertMarkdownFile(absMd, {
           explicitTitle,
           mediaMap,
+          linkRewrites,
         });
+
+        const appliedLinkRewrites: Array<{ from: string; to: string; occurrences: number }> = [];
+        if (linkRewrites) {
+          const counts = new Map<string, number>();
+          for (const link of finalConversion.links) {
+            if (linkRewrites[link.href]) {
+              counts.set(link.href, (counts.get(link.href) ?? 0) + 1);
+            }
+          }
+          for (const [fromHref, occurrences] of counts.entries()) {
+            appliedLinkRewrites.push({
+              from: fromHref,
+              to: linkRewrites[fromHref],
+              occurrences,
+            });
+          }
+        }
 
         const draft = await createXArticleDraft({
           title: finalConversion.title,
@@ -543,6 +736,7 @@ export function createMcpServer(): Server {
           title: finalConversion.title,
           uploaded_inline_images: uploadedInline,
           cover_media_id: coverMediaId ?? null,
+          applied_link_rewrites: appliedLinkRewrites,
           warnings: finalConversion.warnings,
           next_step:
             'CHECKPOINT: Present `editor_url` to the user and STOP. Ask the user via your dedicated ask-user-question tool (or in conversation) for explicit approval before calling `x_article_publish`, because publishing is irreversible.',

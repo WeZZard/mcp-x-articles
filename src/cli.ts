@@ -29,15 +29,33 @@ import {
   runInteractiveSetupAndOAuth2Flow,
 } from './oauth2.js';
 import { PACKAGE_NAME, PACKAGE_VERSION, runStdioMcpServer } from './server.js';
-import { ensureAuthenticatedSession, guessMediaCategory, guessMediaType } from './x-api.js';
+import { filterPublishedXArticles } from './link-resolver.js';
+import {
+  clearPublishedXArticlesCache,
+  ensureAuthenticatedSession,
+  guessMediaCategory,
+  guessMediaType,
+  listPublishedXArticles,
+} from './x-api.js';
 
 export {
   convertMarkdownFile,
   markdownToContentState,
   type ContentState,
   type ConversionResult,
+  type ExtractedLink,
   type MediaMap,
 } from './converter.js';
+export {
+  detectTextScript,
+  extractLocalMarkdownTitle,
+  filterPublishedXArticles,
+  matchLinksToPublishedArticles,
+  type LinkRewriteSuggestion,
+  type LinkScriptKind,
+  type MatchLinksResult,
+  type UnresolvedLocalLink,
+} from './link-resolver.js';
 export {
   clearOAuth2ClientCredentials,
   clearOAuth2UserTokens,
@@ -65,7 +83,15 @@ export {
   refreshOAuth2Token,
   runInteractiveSetupAndOAuth2Flow,
 };
-export { ensureAuthenticatedSession, guessMediaCategory, guessMediaType };
+export {
+  clearPublishedXArticlesCache,
+  ensureAuthenticatedSession,
+  guessMediaCategory,
+  guessMediaType,
+  listPublishedXArticles,
+  type ListPublishedXArticlesResult,
+  type PublishedXArticle,
+} from './x-api.js';
 export {
   computePreflightToken,
   resolveCoverImagePath,
@@ -83,6 +109,7 @@ function printHelp(): void {
       '  mcp-x-articles            Start the MCP server over stdio (default)',
       '  mcp-x-articles auth       Configure X OAuth 2.0 keys in macOS Keychain and authorize in browser',
       '  mcp-x-articles status     Show current OAuth 2.0 credential and token status',
+      '  mcp-x-articles articles   List published X Articles from your timeline (for cross-link lookup)',
       '  mcp-x-articles --version  Print package version',
       '  mcp-x-articles --help     Print this help message',
       '',
@@ -204,6 +231,68 @@ async function runStatusCli(): Promise<void> {
   );
 }
 
+async function runArticlesCli(argv: string[]): Promise<void> {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(
+      'Usage: mcp-x-articles articles [--query <text>] [--limit <n>] [--max-pages <n>] [--refresh]\n',
+    );
+    return;
+  }
+
+  let query: string | undefined;
+  let limit = 20;
+  let maxPages = 3;
+  const forceRefresh = argv.includes('--refresh');
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--query' && i + 1 < argv.length) {
+      query = argv[i + 1];
+      i += 1;
+    } else if (arg === '--limit' && i + 1 < argv.length) {
+      const parsed = Number(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        limit = Math.min(100, Math.trunc(parsed));
+      }
+      i += 1;
+    } else if (arg === '--max-pages' && i + 1 < argv.length) {
+      const parsed = Number(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        maxPages = Math.min(10, Math.trunc(parsed));
+      }
+      i += 1;
+    }
+  }
+
+  const session = await ensureAuthenticatedSession({
+    allowInteractiveLogin: false,
+    verifyProbe: true,
+  });
+  const res = await listPublishedXArticles({
+    session,
+    maxPages,
+    forceRefresh,
+  });
+  const filtered = filterPublishedXArticles(res.articles, query);
+
+  process.stdout.write(
+    JSON.stringify(
+      {
+        ok: true,
+        username: res.username,
+        user_id: res.user_id,
+        scanned_posts: res.scanned_posts,
+        pages_fetched: res.pages_fetched,
+        cached: res.cached,
+        total_found: res.articles.length,
+        articles: filtered.slice(0, limit),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const first = argv[0] ?? '';
@@ -222,6 +311,10 @@ async function main(): Promise<void> {
   }
   if (first === 'status') {
     await runStatusCli();
+    return;
+  }
+  if (first === 'articles') {
+    await runArticlesCli(argv.slice(1));
     return;
   }
 

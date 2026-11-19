@@ -2,7 +2,7 @@
 
 Publish a local Markdown file as an [X Article](https://help.x.com/en/using-x/articles) through the official X API v2 Articles endpoints from any Model Context Protocol (MCP) agent.
 
-- A deterministic compiler (`marked`) converts Markdown into X's Draft.js `content_state` in memory with UTF-16 code unit offsets, eliminating model-generated JSON and offset errors.
+- A deterministic compiler (`marked`) converts Markdown into X's Draft.js `content_state` in memory with UTF-16 code unit offsets and optional non-destructive `link_rewrites` (swapping blog or local `.md` cross-links for already-published X URLs without altering disk files).
 - Local and remote images stream directly from the Node.js MCP server to X's chunked media endpoints so base64 bytes never enter the LLM context window.
 - OAuth 2.0 User Context (`Authorization: Bearer`) with PKCE (`S256`) and automatic long-term rotating `offline.access` refresh tokens backed by a cross-process lock and macOS Keychain persistence.
 - Two human checkpoints guard every run: a pre-flight secret and degradation check before uploading bytes to X, and an explicit approval step after draft creation before irreversible publishing.
@@ -113,8 +113,9 @@ Add `@wezzard/mcp-x-articles` to `claude_desktop_config.json`:
 | Name | Kind | Purpose |
 |---|---|---|
 | `x_article_auth_status` | Tool (`readOnlyHint`) | Checks OAuth 2.0 credential resolution (`env` -> `macos-keychain` -> `xdg-config`), proactively refreshes rotating `offline.access` tokens under a cross-process lock, verifies `/2/users/me`, and launches OAuth 2.0 PKCE browser consent when `login: true`. |
-| `x_article_preflight` | Tool (`readOnlyHint`) | Scans Markdown text for secrets and PII, dry-runs `marked` conversion to list lossy warnings, attaches local images for visual review, and issues a SHA-256 `preflight_token`. |
-| `x_article_create_draft` | Tool (`openWorldHint`) | Verifies `preflight_token` against live disk hashes, uploads inline and cover images in 2.5 MB chunks, compiles UTF-16 `content_state` in memory, and creates a reversible X draft. |
+| `x_article_list_published` | Tool (`readOnlyHint`) | Lists previously published X Articles on the authenticated X account timeline (`GET /2/users/{id}/tweets`) with optional query filtering. |
+| `x_article_preflight` | Tool (`readOnlyHint`) | Scans Markdown text for secrets and PII, dry-runs `marked` conversion to list lossy warnings, matches cross-links against published X Articles (`link_rewrite_suggestions` & `unresolved_local_links`), attaches local images for visual review, and issues a SHA-256 `preflight_token`. |
+| `x_article_create_draft` | Tool (`openWorldHint`) | Verifies `preflight_token` against live disk hashes, uploads inline and cover images in 2.5 MB chunks, compiles UTF-16 `content_state` in memory (applying approved `link_rewrites` non-destructively), and creates a reversible X draft. |
 | `x_article_publish` | Tool (`destructiveHint`) | Publishes a draft permanently (`POST /2/articles/{article_id}/publish`) and returns the live post URL. |
 | `publish-x-article` | Prompt | Provides a structured user prompt template for clients that surface MCP Prompts. |
 

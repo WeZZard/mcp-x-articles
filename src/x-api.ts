@@ -628,4 +628,253 @@ export async function publishXArticle(options: {
   };
 }
 
+export interface PublishedXArticle {
+  post_id: string;
+  article_id: string | null;
+  title: string;
+  preview_text: string | null;
+  created_at: string | null;
+  lang: string | null;
+  post_url: string;
+  article_url: string | null;
+}
+
+export interface ListPublishedXArticlesResult {
+  username: string | null;
+  user_id: string;
+  scanned_posts: number;
+  pages_fetched: number;
+  cached: boolean;
+  articles: PublishedXArticle[];
+}
+
+interface RawTweetEntityUrl {
+  url?: string;
+  expanded_url?: string;
+  display_url?: string;
+  title?: string;
+}
+
+interface RawTimelineTweet {
+  id: string;
+  text?: string;
+  created_at?: string;
+  lang?: string;
+  article?: {
+    id?: string;
+    rest_id?: string;
+    title?: string;
+    preview_text?: string;
+  } | null;
+  article_title?:
+    | string
+    | {
+        id?: string;
+        rest_id?: string;
+        title?: string;
+        preview_text?: string;
+      }
+    | null;
+  entities?: {
+    urls?: RawTweetEntityUrl[];
+  };
+}
+
+interface TimelineCacheEntry {
+  expiresAtMs: number;
+  username: string | null;
+  scannedPosts: number;
+  pagesFetched: number;
+  hasMore: boolean;
+  articles: PublishedXArticle[];
+}
+
+const PUBLISHED_ARTICLES_CACHE_TTL_MS = 5 * 60 * 1000;
+const publishedArticlesCache = new Map<string, TimelineCacheEntry>();
+
+export function clearPublishedXArticlesCache(): void {
+  publishedArticlesCache.clear();
+}
+
+function parseArticleFromTimelineTweet(
+  tweet: RawTimelineTweet,
+  username: string | null,
+): PublishedXArticle | null {
+  const articleObj =
+    tweet.article && typeof tweet.article === 'object' ? tweet.article : undefined;
+  const articleTitleObj =
+    tweet.article_title && typeof tweet.article_title === 'object'
+      ? tweet.article_title
+      : undefined;
+  const articleTitleStr =
+    typeof tweet.article_title === 'string' && tweet.article_title.trim()
+      ? tweet.article_title.trim()
+      : undefined;
+
+  const matchingArticleUrlEntity = tweet.entities?.urls?.find((u) =>
+    /\/(?:i\/)?article\/(\d+)/i.test(u.expanded_url ?? ''),
+  );
+  const hasArticleMetadata = Boolean(
+    articleObj || articleTitleObj || articleTitleStr || matchingArticleUrlEntity,
+  );
+  if (!hasArticleMetadata) {
+    return null;
+  }
+
+  let articleId: string | null = null;
+  const rawArticleId =
+    articleObj?.id ?? articleObj?.rest_id ?? articleTitleObj?.id ?? articleTitleObj?.rest_id;
+  if (typeof rawArticleId === 'string' && rawArticleId.trim()) {
+    articleId = rawArticleId.trim();
+  } else if (matchingArticleUrlEntity?.expanded_url) {
+    const m = /\/(?:i\/)?article\/(\d+)/i.exec(matchingArticleUrlEntity.expanded_url);
+    if (m) articleId = m[1];
+  }
+
+  const rawTitle =
+    (typeof articleObj?.title === 'string' ? articleObj.title : '') ||
+    articleTitleStr ||
+    (typeof articleTitleObj?.title === 'string' ? articleTitleObj.title : '') ||
+    (typeof matchingArticleUrlEntity?.title === 'string' ? matchingArticleUrlEntity.title : '') ||
+    (tweet.text ?? '').replace(/https?:\/\/t\.co\/\S+/g, '').trim();
+
+  const previewText =
+    (typeof articleObj?.preview_text === 'string' && articleObj.preview_text.trim()) ||
+    (typeof articleTitleObj?.preview_text === 'string' && articleTitleObj.preview_text.trim()) ||
+    null;
+
+  const handleSegment = username || 'i';
+  const postUrl = `https://x.com/${handleSegment}/status/${tweet.id}`;
+  const articleUrl = articleId ? `https://x.com/${handleSegment}/article/${articleId}` : null;
+
+  return {
+    post_id: tweet.id,
+    article_id: articleId,
+    title: rawTitle.trim() || `(Untitled Article ${articleId ?? tweet.id})`,
+    preview_text: previewText,
+    created_at: tweet.created_at ?? null,
+    lang: tweet.lang ?? null,
+    post_url: postUrl,
+    article_url: articleUrl,
+  };
+}
+
+/**
+ * List published X Articles from the authenticated user's timeline (`GET /2/users/{id}/tweets`)
+ * using existing `tweet.read` and `users.read` scopes, with a 5-minute per-user cache.
+ */
+export async function listPublishedXArticles(options: {
+  session: AuthSession;
+  maxPages?: number;
+  forceRefresh?: boolean;
+}): Promise<ListPublishedXArticlesResult> {
+  if (!options.session.user?.id) {
+    const me = await authorizedJsonRequest<{
+      data?: { id?: string; username?: string; name?: string };
+    }>({
+      method: 'GET',
+      pathWithQuery: '/2/users/me',
+      session: options.session,
+    });
+    if (me.status >= 400 || !me.data?.data?.id) {
+      throw new Error(
+        `Failed to resolve authenticated X user before listing articles (HTTP ${me.status}): ${JSON.stringify(me.data)}`,
+      );
+    }
+    options.session.user = me.data.data;
+  }
+
+  const userId = options.session.user.id!;
+  const username = options.session.user.username ?? null;
+  const boundedMaxPages = Math.min(Math.max(Math.trunc(options.maxPages ?? 3) || 3, 1), 10);
+
+  if (!options.forceRefresh) {
+    const cached = publishedArticlesCache.get(userId);
+    if (
+      cached &&
+      cached.expiresAtMs > Date.now() &&
+      (!cached.hasMore || cached.pagesFetched >= boundedMaxPages)
+    ) {
+      return {
+        username: cached.username ?? username,
+        user_id: userId,
+        scanned_posts: cached.scannedPosts,
+        pages_fetched: cached.pagesFetched,
+        cached: true,
+        articles: cached.articles.slice(),
+      };
+    }
+  }
+
+  const articles: PublishedXArticle[] = [];
+  let scannedPosts = 0;
+  let pagesFetched = 0;
+  let nextToken: string | undefined;
+  let hasMore = false;
+
+  for (let page = 0; page < boundedMaxPages; page += 1) {
+    const params = new URLSearchParams({
+      exclude: 'retweets,replies',
+      max_results: '100',
+      'tweet.fields': 'article,article_title,created_at,entities,lang',
+    });
+    if (nextToken) {
+      params.set('pagination_token', nextToken);
+    }
+
+    const resp = await authorizedJsonRequest<{
+      data?: RawTimelineTweet[];
+      meta?: { next_token?: string; result_count?: number };
+    }>({
+      method: 'GET',
+      pathWithQuery: `/2/users/${encodeURIComponent(userId)}/tweets?${params.toString()}`,
+      session: options.session,
+    });
+
+    if (resp.status >= 400) {
+      throw new Error(
+        `Failed to fetch published X Articles (HTTP ${resp.status}): ${JSON.stringify(resp.data)}`,
+      );
+    }
+
+    pagesFetched += 1;
+    const rows = Array.isArray(resp.data?.data) ? resp.data.data : [];
+    scannedPosts += rows.length;
+
+    for (const row of rows) {
+      const parsed = parseArticleFromTimelineTweet(row, username);
+      if (parsed) {
+        articles.push(parsed);
+      }
+    }
+
+    const token = resp.data?.meta?.next_token;
+    if (!token || rows.length === 0) {
+      hasMore = false;
+      nextToken = undefined;
+      break;
+    }
+    nextToken = token;
+    hasMore = page === boundedMaxPages - 1;
+  }
+
+  publishedArticlesCache.set(userId, {
+    expiresAtMs: Date.now() + PUBLISHED_ARTICLES_CACHE_TTL_MS,
+    username,
+    scannedPosts,
+    pagesFetched,
+    hasMore,
+    articles,
+  });
+
+  return {
+    username,
+    user_id: userId,
+    scanned_posts: scannedPosts,
+    pages_fetched: pagesFetched,
+    cached: false,
+    articles: articles.slice(),
+  };
+}
+
 export type { OAuth2ClientCredentials };
